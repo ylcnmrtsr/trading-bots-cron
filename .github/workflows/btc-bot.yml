@@ -1,0 +1,14 @@
+name: BTC Signal Bot
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger BTC Bot
+        run: |
+          curl -s -X POST "https://superagent-4e0f1cc8.base44.app/functions/btcSignalBot" \
+            -H "Content-Type: application/json" \
+            -d "{}" --max-time 30
