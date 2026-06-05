@@ -3,12 +3,38 @@ on:
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
+
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger Bot2 Scanner
-        run: |
-          curl -s -X POST "https://superagent-4e0f1cc8.base44.app/functions/bot2Runner" \
-            -H "Content-Type: application/json" \
-            -d "{\"mode\":\"scan\"}" --max-time 60
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore state
+        uses: actions/cache@v4
+        with:
+          path: bot2_trades.json
+          key: bot2-trades-${{ github.run_id }}
+          restore-keys: |
+            bot2-trades-
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run Bot2 Scanner
+        env:
+          TELEGRAM_BOT_TOKEN_3: ${{ secrets.TELEGRAM_BOT_TOKEN_3 }}
+        run: python scripts/bot2_runner.py scan
+
+      - name: Save state
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: bot2_trades.json
+          key: bot2-trades-${{ github.run_id }}
