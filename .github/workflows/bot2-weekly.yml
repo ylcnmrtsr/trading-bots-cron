@@ -1,0 +1,14 @@
+name: Bot2 Haftalik Rapor
+on:
+  schedule:
+    - cron: "55 22 * * 1"
+  workflow_dispatch:
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Weekly Review
+        run: |
+          curl -s -X POST "https://superagent-4e0f1cc8.base44.app/functions/bot2Runner" \
+            -H "Content-Type: application/json" \
+            -d "{\"mode\":\"weekly_review\"}" --max-time 60
