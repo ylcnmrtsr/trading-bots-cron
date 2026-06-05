@@ -3,12 +3,39 @@ on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
+
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger BTC Bot
-        run: |
-          curl -s -X POST "https://superagent-4e0f1cc8.base44.app/functions/btcSignalBot" \
-            -H "Content-Type: application/json" \
-            -d "{}" --max-time 30
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore cache
+        uses: actions/cache@v4
+        with:
+          path: btc_cache.json
+          key: btc-cache-${{ github.run_id }}
+          restore-keys: |
+            btc-cache-
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run BTC Signal Bot
+        env:
+          TELEGRAM_BOT_TOKEN_2: ${{ secrets.TELEGRAM_BOT_TOKEN_2 }}
+          TELEGRAM_CHAT_ID: "2055780815"
+        run: python scripts/btc_signal_bot.py
+
+      - name: Save cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: btc_cache.json
+          key: btc-cache-${{ github.run_id }}
