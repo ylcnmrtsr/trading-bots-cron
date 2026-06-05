@@ -1,0 +1,14 @@
+name: Bot2 Scanner
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Bot2 Scanner
+        run: |
+          curl -s -X POST "https://superagent-4e0f1cc8.base44.app/functions/bot2Runner" \
+            -H "Content-Type: application/json" \
+            -d "{\"mode\":\"scan\"}" --max-time 60
