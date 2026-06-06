@@ -1,0 +1,72 @@
+name: Master Bot Runner
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Mode to run'
+        default: 'all'
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install requests ccxt pandas numpy -q
+      - name: Run Watchdog
+        env:
+          BITGET_API_KEY: ${{ secrets.BITGET_API_KEY }}
+          BITGET_SECRET: ${{ secrets.BITGET_SECRET }}
+          BITGET_PASSPHRASE: ${{ secrets.BITGET_PASSPHRASE }}
+          TELEGRAM_BOT_TOKEN_3: ${{ secrets.TELEGRAM_BOT_TOKEN_3 }}
+          BASE44_API_KEY: ${{ secrets.BASE44_API_KEY }}
+        run: python scripts/bot2_runner.py watchdog
+
+  btc-signal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install requests ccxt pandas numpy -q
+      - name: Run BTC Signal Bot
+        env:
+          BITGET_API_KEY: ${{ secrets.BITGET_API_KEY }}
+          BITGET_SECRET: ${{ secrets.BITGET_SECRET }}
+          BITGET_PASSPHRASE: ${{ secrets.BITGET_PASSPHRASE }}
+          TELEGRAM_BOT_TOKEN_2: ${{ secrets.TELEGRAM_BOT_TOKEN_2 }}
+          BASE44_API_KEY: ${{ secrets.BASE44_API_KEY }}
+        run: python scripts/btc_signal_bot.py
+
+  scanner:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && contains(github.event.schedule, '*/5')) }}
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install requests ccxt pandas numpy -q
+      - name: Run Scanner (every 15 min)
+        env:
+          BITGET_API_KEY: ${{ secrets.BITGET_API_KEY }}
+          BITGET_SECRET: ${{ secrets.BITGET_SECRET }}
+          BITGET_PASSPHRASE: ${{ secrets.BITGET_PASSPHRASE }}
+          TELEGRAM_BOT_TOKEN_3: ${{ secrets.TELEGRAM_BOT_TOKEN_3 }}
+          BASE44_API_KEY: ${{ secrets.BASE44_API_KEY }}
+        run: |
+          MINUTE=$(date +%M)
+          if [ $((10#$MINUTE % 15)) -eq 0 ]; then
+            python scripts/bot2_runner.py scan
+          else
+            echo "Scanner skipped (not on 15min mark)"
+          fi
