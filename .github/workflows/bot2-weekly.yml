@@ -1,4 +1,4 @@
-name: Bot2 Haftalik Rapor
+name: Bot2 Weekly Review
 on:
   schedule:
     - cron: "55 19 * * 0"
@@ -11,14 +11,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Restore state
-        uses: actions/cache@v4
-        with:
-          path: bot2_trades.json
-          key: bot2-trades-${{ github.run_id }}
-          restore-keys: |
-            bot2-trades-
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -30,4 +22,5 @@ jobs:
       - name: Run Weekly Review
         env:
           TELEGRAM_BOT_TOKEN_3: ${{ secrets.TELEGRAM_BOT_TOKEN_3 }}
+          BASE44_API_KEY: ${{ secrets.BASE44_API_KEY }}
         run: python scripts/bot2_runner.py weekly
