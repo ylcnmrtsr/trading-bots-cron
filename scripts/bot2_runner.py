@@ -17,7 +17,7 @@ from datetime import datetime, timezone, timedelta
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN_3", "")
 CHAT_ID = "2055780815"
 BITGET_BASE = "https://api.bitget.com/api/v2"
-BASE44_API = "https://api.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/ActiveTrade"
+BASE44_API = "https://app.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/ActiveTrade"
 BASE44_TOKEN = os.environ.get("BASE44_API_KEY", "")
 
 PARAMS = {
@@ -38,7 +38,7 @@ MODE = sys.argv[1] if len(sys.argv) > 1 else "watchdog"
 # ── BASE44 DB ─────────────────────────────────────────────────────────
 def b44_headers():
     return {
-        "api-key": BASE44_TOKEN,
+        "Authorization": f"Bearer {BASE44_TOKEN}",
         "Content-Type": "application/json"
     }
 
