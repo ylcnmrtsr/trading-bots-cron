@@ -1,34 +1,53 @@
 #!/usr/bin/env python3
 """
 BTC Signal Bot — Bitget API
-GitHub Actions içinde doğrudan çalışır, Base44'e bağlanmaz.
+State: Base44 BotCache entity (REST API)
+GitHub Actions içinde çalışır, Base44 function çağırmaz.
 """
 
 import os
 import json
 import math
-import time
 import requests
 from datetime import datetime, timezone
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN_2", "")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "2055780815")
 BITGET_BASE = "https://api.bitget.com/api/v2"
-CACHE_FILE = "btc_cache.json"
+
+BASE44_CACHE_API = "https://api.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/BotCache"
+BASE44_TOKEN = os.environ.get("BASE44_API_KEY", "")
+CACHE_KEY = "btc_signal_cache"
 
 SIGNAL_THRESHOLD = 3.0
 READY_THRESHOLD = 1.8
 
-# ── CACHE ─────────────────────────────────────────────────────────────
-def load_cache():
-    if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, "r") as f:
-            return json.load(f)
-    return {"last_signal": "", "last_ready": "", "last_price": 0}
+# ── CACHE (Base44 DB) ─────────────────────────────────────────────────
+def b44_headers():
+    return {"api-key": BASE44_TOKEN, "Content-Type": "application/json"}
 
-def save_cache(cache):
-    with open(CACHE_FILE, "w") as f:
-        json.dump(cache, f, indent=2)
+def load_cache():
+    try:
+        r = requests.get(BASE44_CACHE_API, headers=b44_headers(), params={"key": CACHE_KEY}, timeout=10)
+        if r.status_code == 200:
+            records = r.json() if isinstance(r.json(), list) else r.json().get("records", [])
+            if records:
+                return json.loads(records[0]["value"]), records[0]["id"]
+    except Exception as e:
+        print(f"Cache load error: {e}")
+    return {"last_signal": "", "last_ready": "", "last_price": 0}, None
+
+def save_cache(data, record_id=None):
+    try:
+        payload = {"key": CACHE_KEY, "value": json.dumps(data)}
+        if record_id:
+            r = requests.put(f"{BASE44_CACHE_API}/{record_id}", headers=b44_headers(), json=payload, timeout=10)
+        else:
+            r = requests.post(BASE44_CACHE_API, headers=b44_headers(), json=payload, timeout=10)
+        if r.status_code not in (200, 201):
+            print(f"Cache save error: {r.status_code} {r.text[:100]}")
+    except Exception as e:
+        print(f"Cache save error: {e}")
 
 # ── TELEGRAM ──────────────────────────────────────────────────────────
 def send_telegram(msg):
@@ -130,7 +149,8 @@ def find_pivot_levels(candles):
 # ── MAIN ──────────────────────────────────────────────────────────────
 def main():
     print("🔍 BTC Signal Bot başlıyor...")
-    cache = load_cache()
+    cache, cache_id = load_cache()
+    print(f"Cache yüklendi: {cache}")
 
     tf15m = get_ohlcv("15min", 200)
     tf1h = get_ohlcv("1H", 200)
@@ -182,7 +202,7 @@ def main():
             cache["last_signal"] = direction_raw
             cache["last_ready"] = ""
             cache["last_price"] = price
-            save_cache(cache)
+            save_cache(cache, cache_id)
             print(f"✅ Sinyal gönderildi: {direction_raw} @ {price:.0f}")
     elif is_long_ready or is_short_ready:
         direction_raw = "LONG" if is_long_ready else "SHORT"
@@ -198,7 +218,7 @@ def main():
             )
             cache["last_ready"] = direction_raw
             cache["last_price"] = price
-            save_cache(cache)
+            save_cache(cache, cache_id)
             print(f"⚠️ Hazır ol gönderildi: {direction_raw} @ {price:.0f}")
     else:
         print(f"Silent — BTC @ {price:.0f}, skor: {weighted:.1f}")
