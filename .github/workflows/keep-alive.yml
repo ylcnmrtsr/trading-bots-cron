@@ -2,21 +2,21 @@ name: Keep Alive
 
 on:
   schedule:
-    - cron: '0 12 * * *'  # Her gün 12:00 UTC
+    - cron: '0 12 * * *'
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   keep-alive:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
       - name: Keep repo active
         run: |
           git config user.email "bot@keepalive.com"
           git config user.name "KeepAlive Bot"
           echo "$(date -u)" > .keepalive
           git add .keepalive
-          git commit -m "keepalive: $(date -u +%Y-%m-%d)" || echo "No changes"
-          git push
+          git diff --cached --quiet && echo "No changes" || git commit -m "keepalive: $(date -u +%Y-%m-%d)" && git push
