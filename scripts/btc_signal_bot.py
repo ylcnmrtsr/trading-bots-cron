@@ -15,7 +15,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN_2", "")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "2055780815")
 BITGET_BASE = "https://api.bitget.com/api/v2"
 
-BASE44_CACHE_API = "https://api.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/BotCache"
+BASE44_CACHE_API = "https://app.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/BotCache"
 BASE44_TOKEN = os.environ.get("BASE44_API_KEY", "")
 CACHE_KEY = "btc_signal_cache"
 
@@ -24,7 +24,7 @@ READY_THRESHOLD = 1.8
 
 # ── CACHE (Base44 DB) ─────────────────────────────────────────────────
 def b44_headers():
-    return {"api-key": BASE44_TOKEN, "Content-Type": "application/json"}
+    return {"Authorization": f"Bearer {BASE44_TOKEN}", "Content-Type": "application/json"}
 
 def load_cache():
     try:
