@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Bot 2 Runner — Bitget Altcoin Signal Bot + Watchdog
-GitHub Actions içinde doğrudan çalışır, Base44'e bağlanmaz.
-State: bot2_trades.json dosyasında tutulur.
+State: Base44 ActiveTrade entity (REST API)
+GitHub Actions içinde çalışır, kredi tüketmez (integration kredisi minimal)
 """
 
 import os
@@ -17,6 +17,8 @@ from datetime import datetime, timezone, timedelta
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN_3", "")
 CHAT_ID = "2055780815"
 BITGET_BASE = "https://api.bitget.com/api/v2"
+BASE44_API = "https://api.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/ActiveTrade"
+BASE44_TOKEN = os.environ.get("BASE44_API_KEY", "")
 
 PARAMS = {
     "minRR": 2.0,
@@ -31,31 +33,54 @@ PARAMS = {
     "leverage": 5,
 }
 
-TRADES_FILE = "bot2_trades.json"
 MODE = sys.argv[1] if len(sys.argv) > 1 else "watchdog"
 
-# ── STATE ─────────────────────────────────────────────────────────────
-def load_trades():
-    if os.path.exists(TRADES_FILE):
-        with open(TRADES_FILE, "r") as f:
-            return json.load(f)
+# ── BASE44 DB ─────────────────────────────────────────────────────────
+def b44_headers():
+    return {
+        "api-key": BASE44_TOKEN,
+        "Content-Type": "application/json"
+    }
+
+def get_open_trades():
+    r = requests.get(BASE44_API, headers=b44_headers(), params={"status": "OPEN"}, timeout=15)
+    if r.status_code == 200:
+        return r.json() if isinstance(r.json(), list) else r.json().get("records", [])
+    print(f"DB GET error: {r.status_code} {r.text[:100]}")
     return []
 
-def save_trades(trades):
-    with open(TRADES_FILE, "w") as f:
-        json.dump(trades, f, indent=2)
+def get_all_trades(limit=200):
+    r = requests.get(BASE44_API, headers=b44_headers(), params={"_limit": limit}, timeout=15)
+    if r.status_code == 200:
+        return r.json() if isinstance(r.json(), list) else r.json().get("records", [])
+    return []
 
-def get_open_trades(trades):
-    return [t for t in trades if t["status"] == "OPEN"]
+def create_trade(trade_data):
+    r = requests.post(BASE44_API, headers=b44_headers(), json=trade_data, timeout=15)
+    if r.status_code in (200, 201):
+        return r.json()
+    print(f"DB CREATE error: {r.status_code} {r.text[:200]}")
+    return None
 
-def get_blacklisted(trades):
+def update_trade(trade_id, update_data):
+    r = requests.put(f"{BASE44_API}/{trade_id}", headers=b44_headers(), json=update_data, timeout=15)
+    if r.status_code == 200:
+        return r.json()
+    print(f"DB UPDATE error: {r.status_code} {r.text[:200]}")
+    return None
+
+def get_blacklisted():
+    all_trades = get_all_trades()
     now = datetime.now(timezone.utc)
     blacklisted = set()
-    for t in trades:
-        if t["status"] == "SL_HIT" and t.get("close_time"):
-            close_dt = datetime.fromisoformat(t["close_time"].replace("Z", "+00:00"))
-            if (now - close_dt).total_seconds() < PARAMS["blacklistHours"] * 3600:
-                blacklisted.add(t["symbol"])
+    for t in all_trades:
+        if t.get("status") == "SL_HIT" and t.get("close_time"):
+            try:
+                close_dt = datetime.fromisoformat(t["close_time"].replace("Z", "+00:00"))
+                if (now - close_dt).total_seconds() < PARAMS["blacklistHours"] * 3600:
+                    blacklisted.add(t["symbol"])
+            except:
+                pass
     return blacklisted
 
 # ── TELEGRAM ──────────────────────────────────────────────────────────
@@ -119,8 +144,7 @@ def get_futures_symbols():
 def calc_rsi(closes, period=14):
     if len(closes) < period + 1:
         return 50
-    gains = []
-    losses = []
+    gains, losses = [], []
     for i in range(1, len(closes)):
         d = closes[i] - closes[i-1]
         gains.append(max(d, 0))
@@ -240,30 +264,27 @@ def calc_tp_sl(price, is_long, atr, res, sup):
     sl_dist = max(sl_dist, min_sl_dist)
 
     sl = (price - sl_dist) if is_long else (price + sl_dist)
-
     tp1 = (price + sl_dist * PARAMS["tp1Ratio"]) if is_long else (price - sl_dist * PARAMS["tp1Ratio"])
     tp2 = (price + sl_dist * PARAMS["tp2Ratio"]) if is_long else (price - sl_dist * PARAMS["tp2Ratio"])
-    rr = sl_dist * PARAMS["tp2Ratio"] / sl_dist if sl_dist > 0 else 0
 
     return {"tp1": round(tp1, 6), "tp2": round(tp2, 6), "sl": round(sl, 6), "rr": PARAMS["tp2Ratio"], "sl_dist": sl_dist}
 
 # ── SCAN ──────────────────────────────────────────────────────────────
 def run_scan():
     print("🔍 Bot2 Scan başlıyor...")
-    trades = load_trades()
-    open_trades = get_open_trades(trades)
+    open_trades = get_open_trades()
 
     if len(open_trades) >= PARAMS["maxOpenTrades"]:
         print(f"Scan skipped — {len(open_trades)}/{PARAMS['maxOpenTrades']} slots full.")
         return
 
-    blacklisted = get_blacklisted(trades)
+    blacklisted = get_blacklisted()
     open_symbols = {t["symbol"] for t in open_trades}
     symbols = get_futures_symbols()
     print(f"Toplam {len(symbols)} coin taranıyor...")
 
     results = []
-    for i, symbol in enumerate(symbols):
+    for symbol in symbols:
         if symbol in blacklisted or symbol in PARAMS["avoidCoins"] or symbol in open_symbols:
             continue
         try:
@@ -297,7 +318,7 @@ def run_scan():
                 "tp1": calc["tp1"], "tp2": calc["tp2"], "sl": calc["sl"],
                 "rr": calc["rr"], "price": price
             })
-        except Exception as e:
+        except:
             pass
         time.sleep(0.05)
 
@@ -321,13 +342,11 @@ def run_scan():
         tp2_lev = tp2_pct * PARAMS["leverage"]
         sl_lev = sl_pct * PARAMS["leverage"]
 
-        trade = {
-            "id": f"{sig['symbol']}_{int(time.time())}",
+        trade_data = {
             "symbol": sig["symbol"],
             "direction": sig["direction"],
             "entry_price": real_price,
             "tp": sig["tp1"],
-            "tp2": sig["tp2"],
             "sl": sig["sl"],
             "original_sl": sig["sl"],
             "rr": round(sig["rr"], 2),
@@ -335,12 +354,25 @@ def run_scan():
             "status": "OPEN",
             "sl_moved_breakeven": False,
             "sl_moved_profit": False,
+            "tp_extended": False,
             "open_time": datetime.now(timezone.utc).isoformat(),
             "close_time": None,
             "result_pct": None,
+            "notes": json.dumps({
+                "tp2": sig["tp2"],
+                "tp1_pct": f"{tp1_pct:.2f}",
+                "tp1_lev": f"{tp1_lev:.2f}",
+                "tp2_pct": f"{tp2_pct:.2f}",
+                "tp2_lev": f"{tp2_lev:.2f}",
+                "sl_pct": f"{sl_pct:.2f}",
+                "sl_lev": f"{sl_lev:.2f}",
+            })
         }
-        trades.append(trade)
-        save_trades(trades)
+
+        created = create_trade(trade_data)
+        if not created:
+            print(f"❌ DB'ye kaydedilemedi: {sym}")
+            continue
 
         dir_str = "📈 LONG 🟢" if is_long else "📉 SHORT 🔴"
         send_telegram(
@@ -360,37 +392,42 @@ def run_scan():
             f"⚖️ *R:R* → {sig['rr']:.2f}R\n"
             f"📊 *Skor* → {sig['score']:.2f}"
         )
-        print(f"✅ Sinyal gönderildi: {sym} {sig['direction']}")
+        print(f"✅ Sinyal gönderildi ve DB'ye kaydedildi: {sym} {sig['direction']}")
 
 # ── WATCHDOG ──────────────────────────────────────────────────────────
 def run_watchdog():
     print("👁️ Bot2 Watchdog başlıyor...")
-    trades = load_trades()
-    open_trades = get_open_trades(trades)
+    open_trades = get_open_trades()
 
     if not open_trades:
-        send_telegram("📊 *BOT 2 DURUM*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n⏳ Şu an açık işlem yok.\n🔍 Tarama devam ediyor...")
         print("Watchdog: açık işlem yok.")
         return
 
     status_lines = []
 
     for trade in open_trades:
-        tid = trade["id"]
+        trade_id = trade["id"]
         symbol = trade["symbol"]
         direction = trade["direction"]
-        entry = trade["entry_price"]
-        sl = trade["sl"]
-        tp = trade["tp"]
-        tp2 = trade.get("tp2", tp)
-        orig_sl = trade.get("original_sl", sl)
+        entry = float(trade["entry_price"])
+        sl = float(trade["sl"])
+        tp = float(trade["tp"])
+        orig_sl = float(trade.get("original_sl") or sl)
+        is_long = direction == "LONG"
+
+        # tp2'yi notes'tan al
+        try:
+            notes = json.loads(trade.get("notes") or "{}")
+            tp2 = float(notes.get("tp2", tp))
+        except:
+            tp2 = tp
 
         price = get_price(symbol)
         if not price:
+            print(f"Fiyat alınamadı: {symbol}")
             continue
 
         sym = symbol.replace("USDT", "")
-        is_long = direction == "LONG"
         sl_dist = abs(entry - orig_sl)
 
         pnl_raw = ((price - entry) / entry * 100) if is_long else ((entry - price) / entry * 100)
@@ -398,14 +435,17 @@ def run_watchdog():
         pnl_emoji = "🟢" if pnl_raw >= 0 else "🔴"
         pnl_sign = "+" if pnl_raw >= 0 else ""
 
+        updated = False
+
         # TP2 HIT
         if (is_long and price >= tp2) or (not is_long and price <= tp2):
             pct = abs(tp2 - entry) / entry * 100
             lev = pct * PARAMS["leverage"]
-            trade["status"] = "TP_HIT"
-            trade["close_time"] = datetime.now(timezone.utc).isoformat()
-            trade["result_pct"] = round(pct, 2)
-            save_trades(trades)
+            update_trade(trade_id, {
+                "status": "TP_HIT",
+                "close_time": datetime.now(timezone.utc).isoformat(),
+                "result_pct": round(pct, 2)
+            })
             send_telegram(
                 f"🏆 *TP2 HIT — {sym}* 🏆\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -422,9 +462,12 @@ def run_watchdog():
             pct = abs(tp - entry) / entry * 100
             lev = pct * PARAMS["leverage"]
             if not trade.get("sl_moved_breakeven"):
+                update_trade(trade_id, {
+                    "sl": entry,
+                    "sl_moved_breakeven": True
+                })
                 trade["sl"] = entry
-                trade["sl_moved_breakeven"] = True
-                save_trades(trades)
+                sl = entry
                 send_telegram(
                     f"✅ *TP1 HIT — {sym}*\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -435,15 +478,17 @@ def run_watchdog():
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 )
                 print(f"✅ TP1 HIT → BE: {sym}")
+                updated = True
 
         # SL HIT
         elif (is_long and price <= sl) or (not is_long and price >= sl):
             pct = abs(sl - entry) / entry * 100
             lev = pct * PARAMS["leverage"]
-            trade["status"] = "SL_HIT"
-            trade["close_time"] = datetime.now(timezone.utc).isoformat()
-            trade["result_pct"] = round(-pct, 2)
-            save_trades(trades)
+            update_trade(trade_id, {
+                "status": "SL_HIT",
+                "close_time": datetime.now(timezone.utc).isoformat(),
+                "result_pct": round(-pct, 2)
+            })
             send_telegram(
                 f"❌ *SL HIT — {sym}*\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -456,14 +501,14 @@ def run_watchdog():
             continue
 
         # +1R SL Yönetimi
-        if sl_dist > 0:
-            current_profit = ((price - entry) / sl_dist * 100) if is_long else ((entry - price) / sl_dist * 100)
-            if current_profit >= 100 and not trade.get("sl_moved_profit"):
-                new_sl = (entry + sl_dist * 0.5) if is_long else (entry - sl_dist * 0.5)
-                trade["sl"] = round(new_sl, 6)
-                trade["sl_moved_profit"] = True
-                save_trades(trades)
-                print(f"+1R SL taşındı: {sym}")
+        if sl_dist > 0 and not updated:
+            current_r = ((price - entry) / sl_dist) if is_long else ((entry - price) / sl_dist)
+            if current_r >= 1.0 and not trade.get("sl_moved_profit"):
+                new_sl = round((entry + sl_dist * 0.5) if is_long else (entry - sl_dist * 0.5), 6)
+                update_trade(trade_id, {"sl": new_sl, "sl_moved_profit": True})
+                trade["sl"] = new_sl
+                sl = new_sl
+                print(f"+1R SL taşındı: {sym} → {new_sl}")
 
         # Durum satırı
         be_status = " 🔒BE" if trade.get("sl_moved_breakeven") else ""
@@ -490,11 +535,15 @@ def run_watchdog():
 # ── WEEKLY REVIEW ─────────────────────────────────────────────────────
 def run_weekly():
     print("📅 Haftalık rapor başlıyor...")
-    trades = load_trades()
+    all_trades = get_all_trades()
     now = datetime.now(timezone.utc)
     week_ago = now - timedelta(days=7)
 
-    closed = [t for t in trades if t.get("close_time") and datetime.fromisoformat(t["close_time"].replace("Z", "+00:00")) >= week_ago]
+    closed = [
+        t for t in all_trades
+        if t.get("close_time") and
+        datetime.fromisoformat(t["close_time"].replace("Z", "+00:00")) >= week_ago
+    ]
 
     if not closed:
         send_telegram("📅 *HAFTALIK RAPOR*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nBu hafta kapanan işlem yok.")
@@ -503,9 +552,8 @@ def run_weekly():
     tp_hits = [t for t in closed if t["status"] == "TP_HIT"]
     sl_hits = [t for t in closed if t["status"] == "SL_HIT"]
     win_rate = len(tp_hits) / len(closed) * 100 if closed else 0
-
-    avg_win = sum(t.get("result_pct", 0) for t in tp_hits) / len(tp_hits) if tp_hits else 0
-    avg_loss = sum(abs(t.get("result_pct", 0)) for t in sl_hits) / len(sl_hits) if sl_hits else 0
+    avg_win = sum(t.get("result_pct", 0) or 0 for t in tp_hits) / len(tp_hits) if tp_hits else 0
+    avg_loss = sum(abs(t.get("result_pct", 0) or 0) for t in sl_hits) / len(sl_hits) if sl_hits else 0
 
     send_telegram(
         f"📅 *HAFTALIK RAPOR*\n"
