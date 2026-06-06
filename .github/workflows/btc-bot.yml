@@ -11,14 +11,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Restore cache
-        uses: actions/cache@v4
-        with:
-          path: btc_cache.json
-          key: btc-cache-${{ github.run_id }}
-          restore-keys: |
-            btc-cache-
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -31,11 +23,5 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN_2: ${{ secrets.TELEGRAM_BOT_TOKEN_2 }}
           TELEGRAM_CHAT_ID: "2055780815"
+          BASE44_API_KEY: ${{ secrets.BASE44_API_KEY }}
         run: python scripts/btc_signal_bot.py
-
-      - name: Save cache
-        uses: actions/cache/save@v4
-        if: always()
-        with:
-          path: btc_cache.json
-          key: btc-cache-${{ github.run_id }}
