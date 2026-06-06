@@ -152,7 +152,7 @@ def main():
     cache, cache_id = load_cache()
     print(f"Cache yüklendi: {cache}")
 
-    tf15m = get_ohlcv("15min", 200)
+    tf15m = get_ohlcv("15m", 200)
     tf1h = get_ohlcv("1H", 200)
     tf4h = get_ohlcv("4H", 200)
 
