@@ -35,7 +35,7 @@ def load_cache():
                 return json.loads(records[0]["value"]), records[0]["id"]
     except Exception as e:
         print(f"Cache load error: {e}")
-    return {"last_signal": "", "last_ready": "", "last_price": 0}, None
+    return {"last_signal": "", "last_ready": "", "last_price": 0, "last_hourly_report": ""}, None
 
 def save_cache(data, record_id=None):
     try:
@@ -99,16 +99,26 @@ def calc_ema(data, period):
         ema = v * k + ema * (1 - k)
     return ema
 
+def calc_macd(closes, fast=12, slow=26, signal=9):
+    if len(closes) < slow + signal:
+        return 0, 0
+    ema_fast = calc_ema(closes, fast)
+    ema_slow = calc_ema(closes, slow)
+    macd_line = ema_fast - ema_slow
+    return macd_line, 0
+
 def analyze_tf(candles):
     if not candles or len(candles) < 50:
         return 0, {}
     closes = [c["close"] for c in candles]
+    highs = [c["high"] for c in candles]
+    lows = [c["low"] for c in candles]
     price = closes[-1]
     score = 0
     details = {}
 
     rsi = calc_rsi(closes)
-    details["rsi"] = rsi
+    details["rsi"] = round(rsi, 1)
     if rsi < 35: score += 2
     elif rsi > 65: score -= 2
     elif rsi < 45: score += 1
@@ -117,9 +127,18 @@ def analyze_tf(candles):
     ema9 = calc_ema(closes, 9)
     ema21 = calc_ema(closes, 21)
     ema50 = calc_ema(closes, 50)
+    details["ema9"] = round(ema9, 0)
+    details["ema21"] = round(ema21, 0)
+    details["ema50"] = round(ema50, 0)
     details["ema_bull"] = ema9 > ema21 > ema50
     if ema9 > ema21 > ema50: score += 2
     elif ema9 < ema21 < ema50: score -= 2
+
+    # Volume spike
+    vols = [c["volume"] for c in candles]
+    avg_vol = sum(vols[-20:-1]) / 19 if len(vols) > 20 else 1
+    last_vol = vols[-1]
+    details["vol_spike"] = round(last_vol / avg_vol, 2) if avg_vol else 1
 
     return score, details
 
@@ -146,6 +165,13 @@ def find_pivot_levels(candles):
 
     return cluster(resistances), cluster(supports)
 
+def should_send_hourly(cache):
+    """Her saat başı bir kez rapor gönder"""
+    now = datetime.now(timezone.utc)
+    current_hour = now.strftime("%Y-%m-%d-%H")
+    last_hour = cache.get("last_hourly_report", "")
+    return current_hour != last_hour
+
 # ── MAIN ──────────────────────────────────────────────────────────────
 def main():
     print("🔍 BTC Signal Bot başlıyor...")
@@ -161,9 +187,9 @@ def main():
         return
 
     price = tf15m[-1]["close"]
-    score15, _ = analyze_tf(tf15m)
-    score1h, _ = analyze_tf(tf1h)
-    score4h, _ = analyze_tf(tf4h)
+    score15, det15 = analyze_tf(tf15m)
+    score1h, det1h = analyze_tf(tf1h)
+    score4h, det4h = analyze_tf(tf4h)
 
     weighted = (score15 * 1 + score1h * 2 + score4h * 3) / 6
 
@@ -178,6 +204,18 @@ def main():
     scores_str = f"15m:{score15:.0f} 1H:{score1h:.0f} 4H:{score4h:.0f}"
     res_str = f"{nearest_res:.0f}" if nearest_res else "-"
     sup_str = f"{nearest_sup:.0f}" if nearest_sup else "-"
+
+    rsi_15 = det15.get("rsi", "-")
+    rsi_1h = det1h.get("rsi", "-")
+    rsi_4h = det4h.get("rsi", "-")
+
+    # Trend yönü
+    if weighted >= 1.5:
+        trend = "📈 YUKARI"
+    elif weighted <= -1.5:
+        trend = "📉 AŞAĞI"
+    else:
+        trend = "➡️ YATAY"
 
     is_long_signal = weighted >= SIGNAL_THRESHOLD
     is_short_signal = weighted <= -SIGNAL_THRESHOLD
@@ -222,6 +260,23 @@ def main():
             print(f"⚠️ Hazır ol gönderildi: {direction_raw} @ {price:.0f}")
     else:
         print(f"Silent — BTC @ {price:.0f}, skor: {weighted:.1f}")
+
+    # ── SAATLİK TEKNİK RAPOR ──────────────────────────────────────────
+    if should_send_hourly(cache):
+        now_str = datetime.now(timezone.utc).strftime("%H:%M UTC")
+        send_telegram(
+            f"📊 *BTC SAATLİK RAPOR* — {now_str}\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"💰 Fiyat: `{price:.0f}` USDT\n"
+            f"📈 Trend: {trend}\n"
+            f"🔢 Skor: `{weighted:.1f}` ({scores_str})\n\n"
+            f"📉 RSI → 15m: `{rsi_15}` | 1H: `{rsi_1h}` | 4H: `{rsi_4h}`\n\n"
+            f"🔴 Resistance: `{res_str}`\n"
+            f"🟢 Support: `{sup_str}`"
+        )
+        cache["last_hourly_report"] = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H")
+        save_cache(cache, cache_id)
+        print(f"📊 Saatlik rapor gönderildi @ {price:.0f}")
 
 if __name__ == "__main__":
     main()
