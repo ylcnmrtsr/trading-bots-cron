@@ -1,0 +1,24 @@
+name: Token Refresh
+on:
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests PyNaCl
+
+      - name: Refresh Base44 Token
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          BASE44_SERVICE_TOKEN: ${{ secrets.BASE44_SERVICE_TOKEN }}
+        run: python3 scripts/token_refresh.py
