@@ -18,7 +18,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN_3", "")
 CHAT_ID = "2055780815"
 BITGET_BASE = "https://api.bitget.com/api/v2"
 BASE44_API = "https://app.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/ActiveTrade"
-BASE44_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJjbGllbnRfaWQiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJhcHBfaWQiOiI2YTFkOTczNTY4YWY5Yjk4NGUwZjFjYzgiLCJhdWQiOiJiYXNlNDRfYXBpIiwic2NvcGUiOiJhcHAuYWNjZXNzIiwiZXhwIjoxNzgwODcyNjQzLCJpYXQiOjE3ODA4NjkwNDN9.V25sKnr1Z0Uy-f_kQo5IiHFhg3qJABJdiQf-y3zZ0iI"
+BASE44_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJjbGllbnRfaWQiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJhcHBfaWQiOiI2YTFkOTczNTY4YWY5Yjk4NGUwZjFjYzgiLCJhdWQiOiJiYXNlNDRfYXBpIiwic2NvcGUiOiJhcHAuYWNjZXNzIiwiZXhwIjoxNzgwODczMjQ4LCJpYXQiOjE3ODA4Njk2NDh9.mG6UN1jr3WvYHa8xDJsUs5ql-EVegrg_a3KQpBJWQcU"
 
 PARAMS = {
     "minRR": 2.0,
@@ -489,14 +489,24 @@ def run_watchdog():
                 "close_time": datetime.now(timezone.utc).isoformat(),
                 "result_pct": round(-pct, 2)
             })
-            send_telegram(
-                f"❌ *SL HIT — {sym}*\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"{'📈 LONG' if is_long else '📉 SHORT'} stoploss!\n"
-                f"💸 Basit: -{pct:.2f}% | 🔗 @{PARAMS['leverage']}x: -{lev:.2f}%\n"
-                f"⛔ 48 saat blacklist'e eklendi\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            )
+            # Breakeven'de kapandıysa farklı mesaj
+            if trade.get("sl_moved_breakeven") and pct < 0.1:
+                send_telegram(
+                    f"🔒 *BREAKEVEN ÇIKIŞ — {sym}*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"{'📈 LONG' if is_long else '📉 SHORT'} breakeven'den kapandı\n"
+                    f"💰 Kar/Zarar: ≈ %0 (güvenli çıkış)\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                )
+            else:
+                send_telegram(
+                    f"❌ *SL HIT — {sym}*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"{'📈 LONG' if is_long else '📉 SHORT'} stoploss!\n"
+                    f"💸 Basit: -{pct:.2f}% | 🔗 @{PARAMS['leverage']}x: -{lev:.2f}%\n"
+                    f"⛔ 48 saat blacklist'e eklendi\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                )
             print(f"❌ SL HIT: {sym}")
             continue
 
@@ -508,6 +518,14 @@ def run_watchdog():
                 update_trade(trade_id, {"sl": new_sl, "sl_moved_profit": True})
                 trade["sl"] = new_sl
                 sl = new_sl
+                send_telegram(
+                    f"📶 *SL TAŞINDI — {sym}*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"{'📈 LONG' if is_long else '📉 SHORT'} +1R karı korunuyor\n"
+                    f"🛡️ Yeni SL: `{new_sl:.6g}` (karda)\n"
+                    f"📊 Mevcut: `{price:.6g}` | R: {current_r:.2f}R\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                )
                 print(f"+1R SL taşındı: {sym} → {new_sl}")
 
         # Durum satırı
