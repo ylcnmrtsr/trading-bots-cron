@@ -18,7 +18,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN_3", "")
 CHAT_ID = "2055780815"
 BITGET_BASE = "https://api.bitget.com/api/v2"
 BASE44_API = "https://app.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/ActiveTrade"
-BASE44_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJjbGllbnRfaWQiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJhcHBfaWQiOiI2YTFkOTczNTY4YWY5Yjk4NGUwZjFjYzgiLCJhdWQiOiJiYXNlNDRfYXBpIiwic2NvcGUiOiJhcHAuYWNjZXNzIiwiZXhwIjoxNzgwODczMjQ4LCJpYXQiOjE3ODA4Njk2NDh9.mG6UN1jr3WvYHa8xDJsUs5ql-EVegrg_a3KQpBJWQcU"
+BASE44_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJjbGllbnRfaWQiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJhcHBfaWQiOiI2YTFkOTczNTY4YWY5Yjk4NGUwZjFjYzgiLCJhdWQiOiJiYXNlNDRfYXBpIiwic2NvcGUiOiJhcHAuYWNjZXNzIiwiZXhwIjoxNzgwODczMzk3LCJpYXQiOjE3ODA4Njk3OTd9.9tu7z7NqFYlVa0fyxae7TLapaXV_rbP_2x8M5L5imp0"
 
 PARAMS = {
     "minRR": 2.0,
@@ -482,15 +482,31 @@ def run_watchdog():
 
         # SL HIT
         elif (is_long and price <= sl) or (not is_long and price >= sl):
-            pct = abs(sl - entry) / entry * 100
-            lev = pct * PARAMS["leverage"]
+            # Doğru kar/zarar hesabı: SL entry üstündeyse KAR
+            if is_long:
+                actual_pct = (sl - entry) / entry * 100  # + ise kar, - ise zarar
+            else:
+                actual_pct = (entry - sl) / entry * 100  # SHORT için ters
+            lev = abs(actual_pct) * PARAMS["leverage"]
+
             update_trade(trade_id, {
                 "status": "SL_HIT",
                 "close_time": datetime.now(timezone.utc).isoformat(),
-                "result_pct": round(-pct, 2)
+                "result_pct": round(actual_pct, 2)
             })
-            # Breakeven'de kapandıysa farklı mesaj
-            if trade.get("sl_moved_breakeven") and pct < 0.1:
+
+            if actual_pct > 0.05:
+                # SL karda kapandı (entry üstünde)
+                send_telegram(
+                    f"💰 *KAR ile ÇIKIŞ — {sym}*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"{'📈 LONG' if is_long else '📉 SHORT'} SL karda vurdu\n"
+                    f"✅ Basit: +{actual_pct:.2f}% | 🔗 @{PARAMS['leverage']}x: +{lev:.2f}%\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                )
+                print(f"💰 SL KARDA HIT: {sym} +{actual_pct:.2f}%")
+            elif abs(actual_pct) < 0.1:
+                # Breakeven
                 send_telegram(
                     f"🔒 *BREAKEVEN ÇIKIŞ — {sym}*\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -498,16 +514,18 @@ def run_watchdog():
                     f"💰 Kar/Zarar: ≈ %0 (güvenli çıkış)\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 )
+                print(f"🔒 BREAKEVEN: {sym}")
             else:
+                # Gerçek zarar
                 send_telegram(
                     f"❌ *SL HIT — {sym}*\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"{'📈 LONG' if is_long else '📉 SHORT'} stoploss!\n"
-                    f"💸 Basit: -{pct:.2f}% | 🔗 @{PARAMS['leverage']}x: -{lev:.2f}%\n"
+                    f"💸 Basit: {actual_pct:.2f}% | 🔗 @{PARAMS['leverage']}x: -{lev:.2f}%\n"
                     f"⛔ 48 saat blacklist'e eklendi\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 )
-            print(f"❌ SL HIT: {sym}")
+                print(f"❌ SL HIT: {sym} {actual_pct:.2f}%")
             continue
 
         # +1R SL Yönetimi
