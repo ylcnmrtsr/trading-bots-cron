@@ -1,0 +1,30 @@
+name: Bot 3 — XAU Scalper
+
+on:
+  schedule:
+    - cron: '* * * * *'   # Her dakika
+  workflow_dispatch:
+
+jobs:
+  xau-scalper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install requests
+
+      - name: Run XAU Scalper Bot
+        env:
+          TELEGRAM_BOT_TOKEN_7: ${{ secrets.TELEGRAM_BOT_TOKEN_7 }}
+          BASE44_SERVICE_TOKEN: ${{ secrets.BASE44_SERVICE_TOKEN }}
+          BOT3_MODE: both
+        run: python scripts/xau_scalper_bot.py
