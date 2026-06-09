@@ -2,8 +2,13 @@ name: Bot 3 — XAU Scalper
 
 on:
   schedule:
-    - cron: '* * * * *'   # Her dakika
+    - cron: '* * * * *'
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Bot mode (both/scan/watch/test)'
+        required: false
+        default: 'both'
 
 jobs:
   xau-scalper:
@@ -26,5 +31,5 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN_7: ${{ secrets.TELEGRAM_BOT_TOKEN_7 }}
           BASE44_SERVICE_TOKEN: ${{ secrets.BASE44_SERVICE_TOKEN }}
-          BOT3_MODE: both
+          BOT3_MODE: ${{ github.event.inputs.mode || 'both' }}
         run: python scripts/xau_scalper_bot.py
