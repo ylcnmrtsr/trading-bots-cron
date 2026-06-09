@@ -660,6 +660,12 @@ def get_open_trade():
     return None
 
 def create_trade(signal):
+    # Çift işlem koruması — lock aktifse yeni işlem açma
+    lock = get_cache("bot3_trade_lock")
+    if lock and lock.get("value") == "LOCKED":
+        print("  Bot3: trade lock aktif — yeni işlem açılmıyor")
+        return None
+
     payload = {
         "symbol":       SYMBOL,
         "direction":    signal["direction"],
@@ -680,7 +686,12 @@ def create_trade(signal):
         r = requests.post(f"{BASE_URL}/ActiveTrade", headers=HEADERS(),
                           json=payload, timeout=10)
         if r.status_code in (200, 201):
-            return r.json().get("id")
+            trade_id = r.json().get("id")
+            # Lock koy — SL/TP kapanana kadar yeni işlem açılmasın
+            set_cache("bot3_trade_lock", {"value": "LOCKED", "trade_id": trade_id,
+                                          "opened_at": datetime.now(timezone.utc).isoformat()})
+            print(f"  Bot3: trade lock SET — ID:{trade_id}")
+            return trade_id
     except Exception as e:
         print(f"DB CREATE error: {e}")
     return None
@@ -690,6 +701,10 @@ def close_trade(trade_id, result, result_pct):
         requests.patch(f"{BASE_URL}/ActiveTrade/{trade_id}", headers=HEADERS(),
                        json={"status": result, "close_time": datetime.now(timezone.utc).isoformat(),
                              "result_pct": round(result_pct, 2)}, timeout=10)
+        # Lock kaldır — yeni işlem açılabilir
+        set_cache("bot3_trade_lock", {"value": "UNLOCKED", "trade_id": trade_id,
+                                      "closed_at": datetime.now(timezone.utc).isoformat()})
+        print(f"  Bot3: trade lock CLEARED — {result} {result_pct:+.2f}%")
     except Exception as e:
         print(f"DB PATCH error: {e}")
 
@@ -817,7 +832,11 @@ def main():
         print(f"  Açık işlem izleniyor: {open_trade['direction']} | ID:{open_trade['id']}")
         watch_trade(open_trade)
 
-    if mode in ("scan", "both") and not open_trade:
+    # Çift işlem koruması: hem DB hem lock kontrol et
+    lock = get_cache("bot3_trade_lock")
+    lock_active = lock and lock.get("value") == "LOCKED"
+
+    if mode in ("scan", "both") and not open_trade and not lock_active:
         print("🔍 XAU taranıyor...")
         signal = analyze(params)
         if signal:
