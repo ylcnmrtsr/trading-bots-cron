@@ -16,7 +16,7 @@ CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "2055780815")
 BITGET_BASE = "https://api.bitget.com/api/v2"
 
 BASE44_CACHE_API = "https://app.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/BotCache"
-BASE44_TOKEN = os.environ.get("BASE44_API_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJjbGllbnRfaWQiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJhcHBfaWQiOiI2YTFkOTczNTY4YWY5Yjk4NGUwZjFjYzgiLCJhdWQiOiJiYXNlNDRfYXBpIiwic2NvcGUiOiJhcHAuYWNjZXNzIiwiZXhwIjoxNzgwOTc0MjQ3LCJpYXQiOjE3ODA5NzA2NDd9.jVN-E2wkS_LH-wclw3sVqYQSFjrqeduRWeR5GQhm8fY")
+BASE44_TOKEN = os.environ.get("BASE44_API_KEY", "")
 CACHE_KEY = "btc_signal_cache"
 
 SIGNAL_THRESHOLD = 3.0
@@ -206,8 +206,9 @@ def main():
     print(f"Cache yüklendi: {cache}")
 
     tf15m = get_ohlcv("15m", 200)
-    tf1h = get_ohlcv("1H", 200)
-    tf4h = get_ohlcv("4H", 200)
+    tf30m = get_ohlcv("30m", 200)
+    tf1h  = get_ohlcv("1H", 200)
+    tf4h  = get_ohlcv("4H", 200)
 
     if not tf15m:
         print("Veri alınamadı.")
@@ -215,10 +216,11 @@ def main():
 
     price = tf15m[-1]["close"]
     score15, _ = analyze_tf(tf15m)
+    score30, _ = analyze_tf(tf30m)
     score1h, _ = analyze_tf(tf1h)
     score4h, _ = analyze_tf(tf4h)
 
-    weighted = (score15 * 1 + score1h * 2 + score4h * 3) / 6
+    weighted = (score15 * 1 + score30 * 2 + score1h * 3 + score4h * 2) / 8
 
     # Self-learning — cache'den eşikleri yükle
     cache = self_learn_btc(cache)
@@ -246,7 +248,7 @@ def main():
     nearest_res = next((r for r in all_res if r > price), None)
     nearest_sup = next((s for s in all_sup if s < price), None)
 
-    scores_str = f"15m:{score15:.0f} 1H:{score1h:.0f} 4H:{score4h:.0f}"
+    scores_str = f"15m:{score15:.0f} 30m:{score30:.0f} 1H:{score1h:.0f} 4H:{score4h:.0f}"
     res_str = f"{nearest_res:.0f}" if nearest_res else "-"
     sup_str = f"{nearest_sup:.0f}" if nearest_sup else "-"
 
