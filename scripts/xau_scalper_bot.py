@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Bot 3 — XAU/USDT Scalper Bot
-- Multi-timeframe analiz: 1m, 5m, 15m, 30m, 1H
+- Multi-timeframe analiz: 1m, 5m, 15m
 - Her dakika tarama + SL/TP izleme
 - Minimum 1:3 RR oranı
 - 100x-500x kaldıraç için optimize (küçük % hareketler)
@@ -269,17 +269,13 @@ TIMEFRAMES = [
     ("1m",  "1m",  100),
     ("5m",  "5m",  100),
     ("15m", "15m", 100),
-    ("30m", "30m", 80),
-    ("1H",  "1H",  80),
 ]
 
-# Ağırlıklar: düşük TF hızlı giriş/çıkış, yüksek TF trend yönü
+# Ağırlıklar
 TF_WEIGHTS = {
     "1m":  1.0,
-    "5m":  1.5,
-    "15m": 2.0,
-    "30m": 2.5,
-    "1H":  3.0,
+    "5m":  2.0,
+    "15m": 3.0,
 }
 
 def analyze():
@@ -308,19 +304,14 @@ def analyze():
 
     print(f"  Ağırlıklı skor: {weighted_avg:.2f}")
 
-    # Yüksek TF'lerin (30m, 1H) aynı yönde olması şart
-    htf_scores = [scores.get("30m", 0), scores.get("1H", 0)]
-    htf_long  = all(s > 0 for s in htf_scores)
-    htf_short = all(s < 0 for s in htf_scores)
-
     # Eşik: uyarı ve sinyal
     ALERT_THRESHOLD = 3.0   # "Hazır ol" bildirimi
     THRESHOLD       = 3.5   # Gerçek sinyal
 
     direction = None
-    if weighted_avg >= THRESHOLD and htf_long:
+    if weighted_avg >= THRESHOLD:
         direction = "LONG"
-    elif weighted_avg <= -THRESHOLD and htf_short:
+    elif weighted_avg <= -THRESHOLD:
         direction = "SHORT"
     elif abs(weighted_avg) >= ALERT_THRESHOLD:
         # Hazır ol uyarısı — sinyal eşiğine yakın
