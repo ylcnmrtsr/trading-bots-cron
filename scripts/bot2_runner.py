@@ -612,7 +612,8 @@ def run_scan():
             if not c1h or not c4h:
                 continue
 
-            # Bu coin için öğrenilmiş indikatör ağırlıklarını al
+            # Bu coin için öğrenilmiş parametreleri yükle (indikatör ağırlıkları dahil)
+            coin_p = get_coin_params(symbol)
             ind_w = coin_p.get("ind_weights", COIN_PARAM_DEFAULTS["ind_weights"])
 
             s15, bd15 = score_tf_detailed(c15m, ind_w)
@@ -637,8 +638,7 @@ def run_scan():
                 }
             }
 
-            # Bu coin için öğrenilmiş parametreleri yükle
-            coin_p = get_coin_params(symbol)
+            # ATR dinamik eşik için eşik değerini al
             coin_score_thresh = coin_p["minScoreThreshold"]
 
             # ATR dinamik eşik — coin'in kendi öğrenilmiş eşiği üzerine uygulanır
