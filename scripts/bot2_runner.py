@@ -18,7 +18,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN_3", "")
 CHAT_ID = "2055780815"
 BITGET_BASE = "https://api.bitget.com/api/v2"
 BASE44_API = "https://app.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/ActiveTrade"
-BASE44_TOKEN = os.environ.get("BASE44_API_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJjbGllbnRfaWQiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJhcHBfaWQiOiI2YTFkOTczNTY4YWY5Yjk4NGUwZjFjYzgiLCJhdWQiOiJiYXNlNDRfYXBpIiwic2NvcGUiOiJhcHAuYWNjZXNzIiwiZXhwIjoxNzgwOTc0MjQ3LCJpYXQiOjE3ODA5NzA2NDd9.jVN-E2wkS_LH-wclw3sVqYQSFjrqeduRWeR5GQhm8fY")
+BASE44_TOKEN = os.environ.get("BASE44_API_KEY", "")
 
 PARAMS = {
     "minRR": 2.0,
@@ -550,8 +550,9 @@ def run_scan():
             continue
         try:
             c15m = get_ohlcv(symbol, "15m", 100)
-            c1h = get_ohlcv(symbol, "1H", 100)
-            c4h = get_ohlcv(symbol, "4H", 80)
+            c30m = get_ohlcv(symbol, "30m", 100)
+            c1h  = get_ohlcv(symbol, "1H",  100)
+            c4h  = get_ohlcv(symbol, "4H",  80)
             if not c1h or not c4h:
                 continue
 
@@ -559,9 +560,10 @@ def run_scan():
             ind_w = coin_p.get("ind_weights", COIN_PARAM_DEFAULTS["ind_weights"])
 
             s15, bd15 = score_tf_detailed(c15m, ind_w)
+            s30, bd30 = score_tf_detailed(c30m, ind_w)
             s1h, bd1h = score_tf_detailed(c1h,  ind_w)
             s4h, bd4h = score_tf_detailed(c4h,  ind_w)
-            weighted = (s15 * 1 + s1h * 2 + s4h * 3) / 6
+            weighted = (s15 * 1 + s30 * 2 + s1h * 3 + s4h * 2) / 8
 
             # Giriş snapshot'ı — hangi indikatör ne dedi
             entry_snapshot = {
