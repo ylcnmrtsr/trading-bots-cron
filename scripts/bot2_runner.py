@@ -659,6 +659,8 @@ def run_scan():
                 continue
 
             # OB filtresi: karşı duvar çok güçlüyse sinyali engelle
+            price_now = c1h[-1]["close"] if c1h else 0
+            ob_score, bid_wall, ask_wall, wall_note = get_order_book_signal(symbol, price_now)
             if (weighted > 0 and ob_score == -1) or (weighted < 0 and ob_score == 1):
                 print(f"  [{symbol}] OB karşı duvar — sinyal engellendi")
                 continue
@@ -672,7 +674,7 @@ def run_scan():
             if calc["rr"] < PARAMS["minRR"]:
                 continue
 
-            liq_tp = get_tp_from_liquidity(symbol, price_now, "LONG" if is_long else "SHORT")
+            liq_tp = get_tp_from_liquidity(symbol, price_now, "LONG" if is_long else "SHORT") if price_now else None
             results.append({
                 "symbol": symbol, "score": weighted,
                 "direction": "LONG" if is_long else "SHORT",
