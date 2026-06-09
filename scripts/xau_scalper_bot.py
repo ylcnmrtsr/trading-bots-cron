@@ -83,6 +83,58 @@ def get_price():
         pass
     return None
 
+
+# ── BOT CACHE (Cooldown için) ──────────────────────────────────────────
+
+def get_cache(key):
+    try:
+        r = requests.get(
+            f"{BASE_URL}/BotCache",
+            headers=HEADERS(),
+            params={"key": key},
+            timeout=8
+        )
+        if r.status_code == 200:
+            items = r.json()
+            for item in items:
+                if item.get("key") == key:
+                    return item.get("value")
+    except:
+        pass
+    return None
+
+def set_cache(key, value):
+    try:
+        # Varsa güncelle, yoksa oluştur
+        r = requests.get(
+            f"{BASE_URL}/BotCache",
+            headers=HEADERS(),
+            params={"key": key},
+            timeout=8
+        )
+        existing = None
+        if r.status_code == 200:
+            for item in r.json():
+                if item.get("key") == key:
+                    existing = item
+                    break
+        if existing:
+            requests.patch(
+                f"{BASE_URL}/BotCache/{existing['id']}",
+                headers=HEADERS(),
+                json={"value": value},
+                timeout=8
+            )
+        else:
+            requests.post(
+                f"{BASE_URL}/BotCache",
+                headers=HEADERS(),
+                json={"key": key, "value": value},
+                timeout=8
+            )
+    except Exception as e:
+        print(f"Cache set error: {e}")
+
 # ── TEKNIK INDIKATÖRLER ────────────────────────────────────────────────
 
 def calc_ema(closes, period):
@@ -273,6 +325,17 @@ def analyze():
     elif abs(weighted_avg) >= ALERT_THRESHOLD:
         # Hazır ol uyarısı — sinyal eşiğine yakın
         alert_dir = "LONG" if weighted_avg > 0 else "SHORT"
+
+        # Cooldown kontrolü — aynı yönde 15 dk içinde tekrar bildirim gönderme
+        cache_key = f"bot3_alert_{alert_dir}"
+        last_alert = get_cache(cache_key)
+        now_ts = int(__import__('time').time())
+        if last_alert and (now_ts - int(last_alert)) < 900:  # 15 dakika
+            print(f"  HAZIR OL cooldown aktif ({alert_dir}), atlandı")
+            return None
+
+        set_cache(cache_key, str(now_ts))
+
         price = get_price()
         tf_str = " | ".join([f"{k}:{v:+d}" for k,v in scores.items()])
         msg = f"""⚠️ *XAU HAZIR OL — {alert_dir}*
