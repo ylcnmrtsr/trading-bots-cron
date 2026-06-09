@@ -1,0 +1,12 @@
+name: Debug Test
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Echo test
+        run: echo "CALISIYOR"
+      - name: Python test
+        run: python3 -c "print('Python OK')"
