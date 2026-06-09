@@ -2,13 +2,17 @@ name: Bot 3 — XAU Scalper
 
 on:
   schedule:
-    - cron: '* * * * *'
+    - cron: '*/1 * * * *'
   workflow_dispatch:
     inputs:
       mode:
         description: 'Bot mode (both/scan/watch/test)'
         required: false
         default: 'both'
+
+concurrency:
+  group: bot3-xau
+  cancel-in-progress: true
 
 jobs:
   xau-scalper:
