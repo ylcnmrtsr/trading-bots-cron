@@ -648,16 +648,14 @@ def self_learn(params):
 
 # ── BASE44 CRUD ────────────────────────────────────────────────────────
 def get_open_trade():
-    """Herhangi bir OPEN işlem varsa döndür — Bot3 tek işlem politikası"""
+    """Sadece XAUUSDT işlemini izle — Bot2 işlemlerine bakma"""
     try:
         r = requests.get(f"{BASE_URL}/ActiveTrade", headers=HEADERS(),
                          params={"status": "OPEN"}, timeout=10)
         if r.status_code == 200:
-            trades = [t for t in r.json() if t.get("status") == "OPEN"]
-            if trades:
-                # Kendi XAU işlemi öncelikli
-                xau = [t for t in trades if t.get("symbol") == SYMBOL]
-                return xau[0] if xau else trades[0]
+            for t in r.json():
+                if t.get("symbol") == SYMBOL and t.get("status") == "OPEN":
+                    return t
     except Exception as e:
         print(f"DB GET error: {e}")
     return None
@@ -726,17 +724,11 @@ def send_telegram(msg):
 # ── WATCHDOG ──────────────────────────────────────────────────────────
 def watch_trade(trade):
     trade_id  = trade["id"]
-    symbol    = trade.get("symbol", SYMBOL)
     direction = trade["direction"]
     entry     = float(trade["entry_price"])
     sl        = float(trade["sl"])
     tp        = float(trade["tp"])
     orig_sl   = float(trade.get("original_sl", sl))
-
-    # Bot3 sadece kendi XAU işlemini izler — diğer botların işlemlerine dokunma
-    if symbol != SYMBOL:
-        print(f"  Bot3: {symbol} işlemi açık (Bot2) — scan atlanıyor, watch yok")
-        return
 
     price = get_price()
     if not price:
@@ -841,11 +833,7 @@ def main():
         print(f"  Açık işlem izleniyor: {open_trade['direction']} | ID:{open_trade['id']}")
         watch_trade(open_trade)
 
-    # Çift işlem koruması: hem DB hem lock kontrol et
-    lock = get_cache("bot3_trade_lock")
-    lock_active = lock and lock.get("value") == "LOCKED"
-
-    if mode in ("scan", "both") and not open_trade and not lock_active:
+    if mode in ("scan", "both") and not open_trade:
         print("🔍 XAU taranıyor...")
         signal = analyze(params)
         if signal:
