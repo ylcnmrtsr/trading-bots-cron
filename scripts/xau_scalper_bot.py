@@ -600,7 +600,22 @@ def watch_trade(trade):
 # ── ANA DÖNGÜ ──────────────────────────────────────────────────────────
 
 def main():
-    mode = os.environ.get("BOT3_MODE", "both")  # "scan", "watch", "both"
+    mode = os.environ.get("BOT3_MODE", "both")  # "scan", "watch", "both", "test"
+    
+    # TEST MODU — sadece Telegram bağlantısını kontrol et
+    if mode == "test":
+        print("TEST MODU — Telegram bağlantı testi")
+        price = get_price()
+        msg = f"""🧪 *Bot 3 XAU Scalper — TEST*
+━━━━━━━━━━━━━━━━━━
+✅ GitHub Actions çalışıyor
+✅ Telegram bağlantısı OK
+💰 XAU Fiyat: `{price:.2f}`
+━━━━━━━━━━━━━━━━━━
+📡 *Bot 3 — XAU Scalper*"""
+        send_telegram(msg)
+        print("Test mesajı gönderildi!")
+        return
     print(f"\n{'='*50}")
     print(f"🏅 Bot 3 — XAU Scalper | {datetime.now().strftime('%H:%M:%S')} | Mode: {mode}")
     print(f"{'='*50}")
