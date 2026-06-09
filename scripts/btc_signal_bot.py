@@ -16,12 +16,13 @@ CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "2055780815")
 BITGET_BASE = "https://api.bitget.com/api/v2"
 
 BASE44_CACHE_API = "https://app.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/BotCache"
-BASE44_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJjbGllbnRfaWQiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJhcHBfaWQiOiI2YTFkOTczNTY4YWY5Yjk4NGUwZjFjYzgiLCJhdWQiOiJiYXNlNDRfYXBpIiwic2NvcGUiOiJhcHAuYWNjZXNzIiwiZXhwIjoxNzgwOTY2MjM5LCJpYXQiOjE3ODA5NjI2Mzl9.1Dj3gIOwmPy2GehdrqouwcQ3elPDshOjdan_A2Ni9Tg"
+BASE44_TOKEN = os.environ.get("BASE44_API_KEY", "")
 CACHE_KEY = "btc_signal_cache"
 
 SIGNAL_THRESHOLD = 3.0
 READY_THRESHOLD = 1.8
 
+# ── CACHE (Base44 DB) ─────────────────────────────────────────────────
 def b44_headers():
     return {"Authorization": f"Bearer {BASE44_TOKEN}", "Content-Type": "application/json"}
 
@@ -48,6 +49,7 @@ def save_cache(data, record_id=None):
     except Exception as e:
         print(f"Cache save error: {e}")
 
+# ── TELEGRAM ──────────────────────────────────────────────────────────
 def send_telegram(msg):
     try:
         requests.post(
@@ -58,6 +60,7 @@ def send_telegram(msg):
     except Exception as e:
         print(f"Telegram error: {e}")
 
+# ── BITGET API ────────────────────────────────────────────────────────
 def get_ohlcv(granularity, limit=200):
     try:
         r = requests.get(
@@ -72,6 +75,7 @@ def get_ohlcv(granularity, limit=200):
         pass
     return []
 
+# ── İNDİKATÖRLER ─────────────────────────────────────────────────────
 def calc_rsi(closes, period=14):
     if len(closes) < period + 1:
         return 50
@@ -99,6 +103,7 @@ def analyze_tf(candles):
     if not candles or len(candles) < 50:
         return 0, {}
     closes = [c["close"] for c in candles]
+    price = closes[-1]
     score = 0
     details = {}
 
@@ -117,6 +122,59 @@ def analyze_tf(candles):
     elif ema9 < ema21 < ema50: score -= 2
 
     return score, details
+
+
+def calc_atr(candles, period=14):
+    if len(candles) < period + 1:
+        return None
+    trs = []
+    for i in range(1, len(candles)):
+        h, l, pc = candles[i]["high"], candles[i]["low"], candles[i-1]["close"]
+        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+    return sum(trs[-period:]) / period
+
+def calc_atr_pct(candles, period=14):
+    atr = calc_atr(candles, period)
+    price = candles[-1]["close"] if candles else 0
+    return (atr / price) * 100 if atr and price > 0 else 0.5
+
+def check_volume(candles, mult=1.2):
+    """Son mumun hacmi, son 20 mum ort. mult katı mı?"""
+    if len(candles) < 21:
+        return True, 1.0
+    vols = [c["volume"] for c in candles[-21:-1]]
+    avg_vol = sum(vols) / len(vols)
+    last_vol = candles[-1]["volume"]
+    ratio = last_vol / avg_vol if avg_vol > 0 else 1.0
+    return ratio >= mult, round(ratio, 2)
+
+def self_learn_btc(cache):
+    """BTC geçmiş sinyalleri analiz et, eşiği otomatik ayarla. Sessiz çalışır."""
+    try:
+        history = cache.get("signal_history", [])
+        if len(history) < 5:
+            print(f"  Bot1 self-learn: yeterli geçmiş yok ({len(history)}/5)")
+            return cache
+        recent = history[-8:]
+        wins   = [h for h in recent if h.get("outcome") == "win"]
+        losses = [h for h in recent if h.get("outcome") == "loss"]
+        win_rate = len(wins) / len(recent)
+        changed = []
+        threshold = cache.get("signal_threshold", 3.0)
+        ready_threshold = cache.get("ready_threshold", 1.8)
+        if win_rate < 0.38 and len(recent) >= 5:
+            threshold = round(min(threshold + 0.2, 4.5), 1)
+            ready_threshold = round(min(ready_threshold + 0.1, 3.0), 1)
+            changed.append(f"eşik↑{threshold}")
+        elif win_rate >= 0.70 and len(recent) >= 5:
+            threshold = round(max(threshold - 0.1, 2.0), 1)
+            changed.append(f"eşik↓{threshold}")
+        cache["signal_threshold"] = threshold
+        cache["ready_threshold"] = ready_threshold
+        print(f"  Bot1 self-learn: WR={win_rate:.0%} | {(', '.join(changed)) if changed else 'değişiklik yok'} | eşik={threshold}")
+    except Exception as e:
+        print(f"  Bot1 self-learn hata: {e}")
+    return cache
 
 def find_pivot_levels(candles):
     highs = [c["high"] for c in candles]
@@ -141,6 +199,7 @@ def find_pivot_levels(candles):
 
     return cluster(resistances), cluster(supports)
 
+# ── MAIN ──────────────────────────────────────────────────────────────
 def main():
     print("🔍 BTC Signal Bot başlıyor...")
     cache, cache_id = load_cache()
@@ -161,6 +220,24 @@ def main():
 
     weighted = (score15 * 1 + score1h * 2 + score4h * 3) / 6
 
+    # Self-learning — cache'den eşikleri yükle
+    cache = self_learn_btc(cache)
+    sig_threshold = cache.get("signal_threshold", SIGNAL_THRESHOLD)
+    rdy_threshold = cache.get("ready_threshold", READY_THRESHOLD)
+
+    # ATR dinamik eşik (1H üzerinden)
+    atr_pct = calc_atr_pct(tf1h)
+    if atr_pct > 2.0:    sig_threshold = round(max(sig_threshold - 0.4, 2.0), 1)
+    elif atr_pct > 1.0:  sig_threshold = round(max(sig_threshold - 0.2, 2.0), 1)
+    elif atr_pct < 0.3:  sig_threshold = round(min(sig_threshold + 0.5, 5.0), 1)
+    elif atr_pct < 0.5:  sig_threshold = round(min(sig_threshold + 0.2, 5.0), 1)
+    rdy_threshold = round(sig_threshold - 1.2, 1)
+    print(f"  ATR%:{atr_pct:.2f} | Dinamik eşik: {sig_threshold:.1f} | Hazır: {rdy_threshold:.1f}")
+
+    # Hacim konfirmasyonu (1H)
+    vol_ok_1h, vol_ratio_1h = check_volume(tf1h, 1.2)
+    print(f"  Hacim 1H: {vol_ratio_1h:.2f}x {'✅' if vol_ok_1h else '(düşük)'}")
+
     res1h, sup1h = find_pivot_levels(tf1h)
     res4h, sup4h = find_pivot_levels(tf4h)
     all_res = sorted(set(res1h + res4h))
@@ -173,10 +250,10 @@ def main():
     res_str = f"{nearest_res:.0f}" if nearest_res else "-"
     sup_str = f"{nearest_sup:.0f}" if nearest_sup else "-"
 
-    is_long_signal = weighted >= SIGNAL_THRESHOLD
-    is_short_signal = weighted <= -SIGNAL_THRESHOLD
-    is_long_ready = READY_THRESHOLD <= weighted < SIGNAL_THRESHOLD
-    is_short_ready = -SIGNAL_THRESHOLD < weighted <= -READY_THRESHOLD
+    is_long_signal  = weighted >= sig_threshold and vol_ok_1h
+    is_short_signal = weighted <= -sig_threshold and vol_ok_1h
+    is_long_ready   = rdy_threshold <= weighted < sig_threshold
+    is_short_ready  = -sig_threshold < weighted <= -rdy_threshold
 
     last_price = cache.get("last_price", 0)
     price_moved = abs(price - last_price) / last_price * 100 > 2 if last_price else True
@@ -191,7 +268,8 @@ def main():
                 f"📍 Fiyat: `{price:.0f}`\n"
                 f"📊 Yön: *{direction}*\n"
                 f"📈 Skor: {weighted:.1f} | {scores_str}\n"
-                f"📐 Resistance: `{res_str}` | Support: `{sup_str}`"
+                f"📐 Resistance: `{res_str}` | Support: `{sup_str}`\n"
+                f"📦 Hacim: `{vol_ratio_1h:.1f}x` | 📉 ATR%: `{atr_pct:.2f}`"
             )
             cache["last_signal"] = direction_raw
             cache["last_ready"] = ""
