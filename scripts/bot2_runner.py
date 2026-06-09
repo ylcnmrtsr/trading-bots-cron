@@ -18,7 +18,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN_3", "")
 CHAT_ID = "2055780815"
 BITGET_BASE = "https://api.bitget.com/api/v2"
 BASE44_API = "https://app.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/ActiveTrade"
-BASE44_TOKEN = os.environ.get("BASE44_API_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJjbGllbnRfaWQiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJhcHBfaWQiOiI2YTFkOTczNTY4YWY5Yjk4NGUwZjFjYzgiLCJhdWQiOiJiYXNlNDRfYXBpIiwic2NvcGUiOiJhcHAuYWNjZXNzIiwiZXhwIjoxNzgwOTcyNzYyLCJpYXQiOjE3ODA5NjkxNjJ9.W3EK3YC4FFpmXUPdgVzi_ToQUOMU7h0ZBwpDaZyZZ6o")
+BASE44_TOKEN = os.environ.get("BASE44_API_KEY", "")
 
 PARAMS = {
     "minRR": 2.0,
@@ -112,35 +112,102 @@ def set_cache(key, value):
     except Exception as e:
         print(f"Cache set error: {e}")
 
+# ── PER-COIN PARAMETRE DEFAULTS ───────────────────────────────────────
+COIN_PARAM_DEFAULTS = {
+    "minScoreThreshold": 3.5,
+    "maxSlPct": 4.5,
+    "wins": 0,
+    "losses": 0,
+    "version": 1,
+}
+
+def get_coin_params(symbol):
+    """Bu coin için BotCache'den parametre profilini yükle."""
+    cache_key = f"bot2_coin_{symbol}"
+    raw = get_cache(cache_key)
+    if raw:
+        try:
+            p = json.loads(raw)
+            for k, v in COIN_PARAM_DEFAULTS.items():
+                if k not in p:
+                    p[k] = v
+            return p
+        except:
+            pass
+    return COIN_PARAM_DEFAULTS.copy()
+
+def save_coin_params(symbol, p):
+    """Bu coin için parametre profilini BotCache'e kaydet."""
+    cache_key = f"bot2_coin_{symbol}"
+    set_cache(cache_key, json.dumps(p))
+
 def self_learn():
-    """Kapanan işlemleri analiz et, PARAMS'ı otomatik güncelle. Sessiz çalışır."""
+    """
+    Tüm kapanan işlemleri coin bazlı gruplandır.
+    Her coin kendi geçmişinden öğrenir — diğer coinleri etkilemez.
+    Sessiz çalışır.
+    """
     try:
-        all_trades = get_all_trades(50)
-        closed = [t for t in all_trades if t.get("status") in ("TP_HIT","SL_HIT") and t.get("result_pct") is not None]
-        recent = sorted(closed, key=lambda x: x.get("close_time",""), reverse=True)[:8]
-        if len(recent) < 4:
-            print(f"  Bot2 self-learn: yeterli geçmiş yok ({len(recent)}/4)")
+        all_trades = get_all_trades(100)
+        closed = [t for t in all_trades
+                  if t.get("status") in ("TP_HIT", "SL_HIT")
+                  and t.get("result_pct") is not None
+                  and t.get("symbol")]
+
+        if not closed:
+            print("  Bot2 self-learn: hiç kapanan işlem yok")
             return
-        wins   = [t for t in recent if float(t.get("result_pct",0)) > 0]
-        losses = [t for t in recent if float(t.get("result_pct",0)) <= 0]
-        win_rate = len(wins) / len(recent)
-        avg_loss = sum(abs(float(t.get("result_pct",0))) for t in losses) / len(losses) if losses else 0
-        changed = []
-        if win_rate < 0.38 and len(recent) >= 5:
-            if PARAMS["minScoreThreshold"] < 5.0:
-                PARAMS["minScoreThreshold"] = round(PARAMS["minScoreThreshold"] + 0.2, 1)
-                changed.append(f"minScore↑{PARAMS['minScoreThreshold']}")
-        elif win_rate >= 0.70 and len(recent) >= 5:
-            if PARAMS["minScoreThreshold"] > 2.5:
-                PARAMS["minScoreThreshold"] = round(PARAMS["minScoreThreshold"] - 0.1, 1)
-                changed.append(f"minScore↓{PARAMS['minScoreThreshold']}")
-        if avg_loss > 3.5 and PARAMS["maxSlPct"] > 2.0:
-            PARAMS["maxSlPct"] = round(PARAMS["maxSlPct"] - 0.3, 1)
-            changed.append(f"maxSL↓{PARAMS['maxSlPct']}")
-        elif avg_loss < 1.5 and PARAMS["maxSlPct"] < 5.0:
-            PARAMS["maxSlPct"] = round(PARAMS["maxSlPct"] + 0.2, 1)
-            changed.append(f"maxSL↑{PARAMS['maxSlPct']}")
-        print(f"  Bot2 self-learn: WR={win_rate:.0%} AvgLoss={avg_loss:.2f}% | {(', '.join(changed)) if changed else 'değişiklik yok'}")
+
+        # Coin bazlı gruplama
+        from collections import defaultdict
+        by_symbol = defaultdict(list)
+        for t in closed:
+            by_symbol[t["symbol"]].append(t)
+
+        for symbol, trades in by_symbol.items():
+            recent = sorted(trades, key=lambda x: x.get("close_time", ""), reverse=True)[:6]
+            if len(recent) < 3:
+                continue  # bu coin için yeterli geçmiş yok, atla
+
+            wins   = [t for t in recent if float(t.get("result_pct", 0)) > 0]
+            losses = [t for t in recent if float(t.get("result_pct", 0)) <= 0]
+            win_rate = len(wins) / len(recent)
+            avg_loss = sum(abs(float(t.get("result_pct", 0))) for t in losses) / len(losses) if losses else 0
+
+            p = get_coin_params(symbol)
+            changed = []
+
+            # Win rate düşükse → bu coin için daha seçici ol
+            if win_rate < 0.38:
+                if p["minScoreThreshold"] < 5.5:
+                    p["minScoreThreshold"] = round(p["minScoreThreshold"] + 0.3, 1)
+                    changed.append(f"score↑{p['minScoreThreshold']}")
+                if p["maxSlPct"] > 2.0:
+                    p["maxSlPct"] = round(p["maxSlPct"] - 0.3, 1)
+                    changed.append(f"sl↓{p['maxSlPct']}")
+            # Win rate yüksekse → bu coin için biraz daha agresif ol
+            elif win_rate >= 0.70:
+                if p["minScoreThreshold"] > 2.5:
+                    p["minScoreThreshold"] = round(p["minScoreThreshold"] - 0.1, 1)
+                    changed.append(f"score↓{p['minScoreThreshold']}")
+
+            # Ortalama kayıp büyükse SL sıkılaştır
+            if avg_loss > 3.5 and p["maxSlPct"] > 2.0:
+                p["maxSlPct"] = round(p["maxSlPct"] - 0.2, 1)
+                changed.append(f"sl↓{p['maxSlPct']}")
+
+            p["wins"]    = len(wins)
+            p["losses"]  = len(losses)
+            p["version"] = p.get("version", 1) + (1 if changed else 0)
+
+            save_coin_params(symbol, p)
+
+            sym_short = symbol.replace("USDT", "")
+            if changed:
+                print(f"  Self-learn [{sym_short}]: WR={win_rate:.0%} | {', '.join(changed)}")
+            else:
+                print(f"  Self-learn [{sym_short}]: WR={win_rate:.0%} AvgLoss={avg_loss:.2f}% — stabil")
+
     except Exception as e:
         print(f"  Bot2 self-learn hata: {e}")
 
@@ -330,9 +397,11 @@ def calc_atr_pct(candles, period=14):
     price = candles[-1]["close"]
     return (atr / price) * 100 if price > 0 else 0.5
 
-def calc_tp_sl(price, is_long, atr, res, sup):
+def calc_tp_sl(price, is_long, atr, res, sup, coin_p=None):
+    """coin_p verilirse o coin'in öğrenilmiş maxSlPct kullanılır."""
+    max_sl_pct = coin_p["maxSlPct"] if coin_p else PARAMS["maxSlPct"]
     min_sl_dist = atr * 1.5
-    max_sl_dist = price * (PARAMS["maxSlPct"] / 100)
+    max_sl_dist = price * (max_sl_pct / 100)
     min_sl_dist_floor = price * (PARAMS["minSlPct"] / 100)
 
     if is_long:
@@ -389,14 +458,18 @@ def run_scan():
             s4h = score_tf(c4h)
             weighted = (s15 * 1 + s1h * 2 + s4h * 3) / 6
 
-            # ATR dinamik eşik
+            # Bu coin için öğrenilmiş parametreleri yükle
+            coin_p = get_coin_params(symbol)
+            coin_score_thresh = coin_p["minScoreThreshold"]
+
+            # ATR dinamik eşik — coin'in kendi öğrenilmiş eşiği üzerine uygulanır
             atr_pct = calc_atr_pct(c1h)
-            if atr_pct > 1.5:    dyn_thresh = PARAMS["minScoreThreshold"] - 0.4
-            elif atr_pct > 0.8:  dyn_thresh = PARAMS["minScoreThreshold"] - 0.2
-            elif atr_pct < 0.2:  dyn_thresh = PARAMS["minScoreThreshold"] + 0.5
-            elif atr_pct < 0.4:  dyn_thresh = PARAMS["minScoreThreshold"] + 0.2
-            else:                dyn_thresh = PARAMS["minScoreThreshold"]
-            dyn_thresh = max(2.5, min(6.0, dyn_thresh))
+            if atr_pct > 1.5:    dyn_thresh = coin_score_thresh - 0.4
+            elif atr_pct > 0.8:  dyn_thresh = coin_score_thresh - 0.2
+            elif atr_pct < 0.2:  dyn_thresh = coin_score_thresh + 0.5
+            elif atr_pct < 0.4:  dyn_thresh = coin_score_thresh + 0.2
+            else:                dyn_thresh = coin_score_thresh
+            dyn_thresh = max(2.5, min(6.5, dyn_thresh))
 
             if abs(weighted) < dyn_thresh:
                 continue
@@ -411,7 +484,7 @@ def run_scan():
             atr = calc_atr(c1h)
             combined = c1h + c4h
             res, sup = find_sr_levels(combined)
-            calc = calc_tp_sl(price, is_long, atr, res, sup)
+            calc = calc_tp_sl(price, is_long, atr, res, sup, coin_p)
 
             if calc["rr"] < PARAMS["minRR"]:
                 continue
@@ -422,6 +495,7 @@ def run_scan():
                 "tp1": calc["tp1"], "tp2": calc["tp2"], "sl": calc["sl"],
                 "rr": calc["rr"], "price": price,
                 "vol_ratio": vol_ratio, "dyn_thresh": round(dyn_thresh, 2),
+                "coin_score_thresh": round(coin_score_thresh, 1),
             })
         except:
             pass
@@ -473,6 +547,7 @@ def run_scan():
                 "sl_lev": f"{sl_lev:.2f}",
                 "vol_ratio": sig.get("vol_ratio", "?"),
                 "dyn_thresh": sig.get("dyn_thresh", "?"),
+                "coin_score_thresh": sig.get("coin_score_thresh", "?"),
             })
         }
 
