@@ -157,6 +157,62 @@ def save_coin_params(symbol, p):
     cache_key = f"bot2_coin_{symbol}"
     set_cache(cache_key, json.dumps(p))
 
+
+def get_order_book_signal(symbol, price, product_type="USDT-FUTURES", range_pct=0.005):
+    try:
+        r = requests.get(
+            "https://api.bitget.com/api/v2/mix/market/merge-depth",
+            params={"symbol": symbol, "productType": product_type, "limit": "100"},
+            timeout=5
+        )
+        if r.status_code != 200:
+            return 0, 0, 0, "OB hata"
+        d = r.json()["data"]
+        asks = [[float(x[0]), float(x[1])] for x in d["asks"]]
+        bids = [[float(x[0]), float(x[1])] for x in d["bids"]]
+        ask_wall = sum(x[1] for x in asks if x[0] <= price * (1 + range_pct))
+        bid_wall = sum(x[1] for x in bids if x[0] >= price * (1 - range_pct))
+        total = ask_wall + bid_wall
+        if total == 0:
+            return 0, 0, 0, "OB veri yok"
+        bid_ratio = bid_wall / total
+        avg_ask_vol = sum(a[1] for a in asks) / len(asks)
+        avg_bid_vol = sum(b[1] for b in bids) / len(bids)
+        ask_liq = [x[0] for x in asks if x[1] > avg_ask_vol * 3]
+        bid_liq = [x[0] for x in bids if x[1] > avg_bid_vol * 3]
+        wall_note = []
+        if ask_liq: wall_note.append(f"Satış@{ask_liq[0]:.4f}")
+        if bid_liq: wall_note.append(f"Alış@{bid_liq[0]:.4f}")
+        wall_note = " | ".join(wall_note) if wall_note else "Duvar yok"
+        ob_score = 1 if bid_ratio >= 0.60 else (-1 if bid_ratio <= 0.40 else 0)
+        return ob_score, round(bid_wall,2), round(ask_wall,2), wall_note
+    except Exception as e:
+        return 0, 0, 0, f"OB err:{e}"
+
+
+def get_tp_from_liquidity(symbol, price, direction, product_type="USDT-FUTURES"):
+    try:
+        r = requests.get(
+            "https://api.bitget.com/api/v2/mix/market/merge-depth",
+            params={"symbol": symbol, "productType": product_type, "limit": "200"},
+            timeout=5
+        )
+        if r.status_code != 200:
+            return None
+        d = r.json()["data"]
+        asks = [[float(x[0]), float(x[1])] for x in d["asks"]]
+        bids = [[float(x[0]), float(x[1])] for x in d["bids"]]
+        avg_ask = sum(a[1] for a in asks) / len(asks) if asks else 0
+        avg_bid = sum(b[1] for b in bids) / len(bids) if bids else 0
+        if direction == "LONG":
+            walls = [x[0] for x in asks if x[0] > price and x[1] > avg_ask * 2.5]
+            return min(walls) if walls else None
+        else:
+            walls = [x[0] for x in bids if x[0] < price and x[1] > avg_bid * 2.5]
+            return max(walls) if walls else None
+    except:
+        return None
+
 def self_learn():
     """
     Tüm kapanan işlemleri coin bazlı gruplandır.
@@ -602,6 +658,10 @@ def run_scan():
             if not vol_ok:
                 continue
 
+            # OB filtresi: karşı duvar çok güçlüyse sinyali engelle
+            if (weighted > 0 and ob_score == -1) or (weighted < 0 and ob_score == 1):
+                print(f"  [{symbol}] OB karşı duvar — sinyal engellendi")
+                continue
             is_long = weighted > 0
             price = c1h[-1]["close"]
             atr = calc_atr(c1h)
@@ -612,6 +672,7 @@ def run_scan():
             if calc["rr"] < PARAMS["minRR"]:
                 continue
 
+            liq_tp = get_tp_from_liquidity(symbol, price_now, "LONG" if is_long else "SHORT")
             results.append({
                 "symbol": symbol, "score": weighted,
                 "direction": "LONG" if is_long else "SHORT",
@@ -697,7 +758,10 @@ def run_scan():
             f"   💸 Basit: -{sl_pct:.2f}% | 🔗 @{PARAMS['leverage']}x: -{sl_lev:.2f}%\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"⚖️ *R:R* → {sig['rr']:.2f}R\n"
-            f"📊 *Skor* → {sig['score']:.2f}"
+            f"📊 *Skor* → {sig['score']:.2f}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📚 OB: Alış `{bid_wall:.1f}` / Satış `{ask_wall:.1f}` | {wall_note}" +
+            (f"\n🎯 Liq TP: `{liq_tp:.6g}`" if liq_tp else "")
         )
         print(f"✅ Sinyal gönderildi ve DB'ye kaydedildi: {sym} {sig['direction']}")
 
