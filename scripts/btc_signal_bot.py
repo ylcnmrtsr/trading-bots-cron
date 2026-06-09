@@ -311,6 +311,8 @@ def main():
     # ── ORDER BOOK filtresi ──
     ob_score, bid_wall, ask_wall, wall_note = get_order_book_signal("BTCUSDT", price)
     print(f"  OB: bid={bid_wall} ask={ask_wall} skor={ob_score} | {wall_note}")
+    direction_for_liq = "LONG" if weighted >= 0 else "SHORT"
+    liq_tp = get_tp_from_liquidity("BTCUSDT", price, direction_for_liq)
 
     is_long_signal  = weighted >= sig_threshold and vol_ok_1h and ob_score >= 0
     is_short_signal = weighted <= -sig_threshold and vol_ok_1h and ob_score <= 0
