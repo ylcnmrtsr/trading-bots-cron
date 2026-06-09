@@ -18,7 +18,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN_3", "")
 CHAT_ID = "2055780815"
 BITGET_BASE = "https://api.bitget.com/api/v2"
 BASE44_API = "https://app.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/ActiveTrade"
-BASE44_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJjbGllbnRfaWQiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJhcHBfaWQiOiI2YTFkOTczNTY4YWY5Yjk4NGUwZjFjYzgiLCJhdWQiOiJiYXNlNDRfYXBpIiwic2NvcGUiOiJhcHAuYWNjZXNzIiwiZXhwIjoxNzgwOTY2MjM5LCJpYXQiOjE3ODA5NjI2Mzl9.1Dj3gIOwmPy2GehdrqouwcQ3elPDshOjdan_A2Ni9Tg"
+BASE44_TOKEN = os.environ.get("BASE44_API_KEY", "")
 
 PARAMS = {
     "minRR": 2.0,
@@ -82,6 +82,67 @@ def get_blacklisted():
             except:
                 pass
     return blacklisted
+
+
+# ── SELF-LEARNING ─────────────────────────────────────────────────────
+BOTCACHE_API = "https://api.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/BotCache"
+
+def get_cache(key):
+    try:
+        r = requests.get(BOTCACHE_API, headers=b44_headers(), params={"key": key}, timeout=8)
+        if r.status_code == 200:
+            for item in r.json():
+                if item.get("key") == key:
+                    return item.get("value")
+    except: pass
+    return None
+
+def set_cache(key, value):
+    try:
+        r = requests.get(BOTCACHE_API, headers=b44_headers(), params={"key": key}, timeout=8)
+        existing = None
+        if r.status_code == 200:
+            for item in r.json():
+                if item.get("key") == key:
+                    existing = item; break
+        if existing:
+            requests.patch(f"{BOTCACHE_API}/{existing['id']}", headers=b44_headers(), json={"value": value}, timeout=8)
+        else:
+            requests.post(BOTCACHE_API, headers=b44_headers(), json={"key": key, "value": value}, timeout=8)
+    except Exception as e:
+        print(f"Cache set error: {e}")
+
+def self_learn():
+    """Kapanan işlemleri analiz et, PARAMS'ı otomatik güncelle. Sessiz çalışır."""
+    try:
+        all_trades = get_all_trades(50)
+        closed = [t for t in all_trades if t.get("status") in ("TP_HIT","SL_HIT") and t.get("result_pct") is not None]
+        recent = sorted(closed, key=lambda x: x.get("close_time",""), reverse=True)[:8]
+        if len(recent) < 4:
+            print(f"  Bot2 self-learn: yeterli geçmiş yok ({len(recent)}/4)")
+            return
+        wins   = [t for t in recent if float(t.get("result_pct",0)) > 0]
+        losses = [t for t in recent if float(t.get("result_pct",0)) <= 0]
+        win_rate = len(wins) / len(recent)
+        avg_loss = sum(abs(float(t.get("result_pct",0))) for t in losses) / len(losses) if losses else 0
+        changed = []
+        if win_rate < 0.38 and len(recent) >= 5:
+            if PARAMS["minScoreThreshold"] < 5.0:
+                PARAMS["minScoreThreshold"] = round(PARAMS["minScoreThreshold"] + 0.2, 1)
+                changed.append(f"minScore↑{PARAMS['minScoreThreshold']}")
+        elif win_rate >= 0.70 and len(recent) >= 5:
+            if PARAMS["minScoreThreshold"] > 2.5:
+                PARAMS["minScoreThreshold"] = round(PARAMS["minScoreThreshold"] - 0.1, 1)
+                changed.append(f"minScore↓{PARAMS['minScoreThreshold']}")
+        if avg_loss > 3.5 and PARAMS["maxSlPct"] > 2.0:
+            PARAMS["maxSlPct"] = round(PARAMS["maxSlPct"] - 0.3, 1)
+            changed.append(f"maxSL↓{PARAMS['maxSlPct']}")
+        elif avg_loss < 1.5 and PARAMS["maxSlPct"] < 5.0:
+            PARAMS["maxSlPct"] = round(PARAMS["maxSlPct"] + 0.2, 1)
+            changed.append(f"maxSL↑{PARAMS['maxSlPct']}")
+        print(f"  Bot2 self-learn: WR={win_rate:.0%} AvgLoss={avg_loss:.2f}% | {(', '.join(changed)) if changed else 'değişiklik yok'}")
+    except Exception as e:
+        print(f"  Bot2 self-learn hata: {e}")
 
 # ── TELEGRAM ──────────────────────────────────────────────────────────
 def send_telegram(msg):
@@ -246,6 +307,29 @@ def score_tf(candles):
 
     return score
 
+
+def check_volume(candles, mult=1.3):
+    """Son mumun hacmi, son 20 mum ort. mult katı mı?"""
+    if len(candles) < 21:
+        return True, 1.0
+    vols = [c["volume"] for c in candles[-21:-1]]
+    avg_vol = sum(vols) / len(vols)
+    last_vol = candles[-1]["volume"]
+    ratio = last_vol / avg_vol if avg_vol > 0 else 1.0
+    return ratio >= mult, round(ratio, 2)
+
+def calc_atr_pct(candles, period=14):
+    """ATR yüzdesi — dinamik eşik için"""
+    if len(candles) < period + 1:
+        return 0.5
+    trs = []
+    for i in range(1, len(candles)):
+        h, l, pc = candles[i]["high"], candles[i]["low"], candles[i-1]["close"]
+        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+    atr = sum(trs[-period:]) / period
+    price = candles[-1]["close"]
+    return (atr / price) * 100 if price > 0 else 0.5
+
 def calc_tp_sl(price, is_long, atr, res, sup):
     min_sl_dist = atr * 1.5
     max_sl_dist = price * (PARAMS["maxSlPct"] / 100)
@@ -272,6 +356,12 @@ def calc_tp_sl(price, is_long, atr, res, sup):
 # ── SCAN ──────────────────────────────────────────────────────────────
 def run_scan():
     print("🔍 Bot2 Scan başlıyor...")
+    # Self-learning her scan başında çalışır
+    last_learn = get_cache("bot2_last_learn")
+    now_ts = int(time.time())
+    if not last_learn or (now_ts - int(last_learn)) >= 900:
+        self_learn()
+        set_cache("bot2_last_learn", str(now_ts))
     open_trades = get_open_trades()
 
     if len(open_trades) >= PARAMS["maxOpenTrades"]:
@@ -299,7 +389,21 @@ def run_scan():
             s4h = score_tf(c4h)
             weighted = (s15 * 1 + s1h * 2 + s4h * 3) / 6
 
-            if abs(weighted) < PARAMS["minScoreThreshold"]:
+            # ATR dinamik eşik
+            atr_pct = calc_atr_pct(c1h)
+            if atr_pct > 1.5:    dyn_thresh = PARAMS["minScoreThreshold"] - 0.4
+            elif atr_pct > 0.8:  dyn_thresh = PARAMS["minScoreThreshold"] - 0.2
+            elif atr_pct < 0.2:  dyn_thresh = PARAMS["minScoreThreshold"] + 0.5
+            elif atr_pct < 0.4:  dyn_thresh = PARAMS["minScoreThreshold"] + 0.2
+            else:                dyn_thresh = PARAMS["minScoreThreshold"]
+            dyn_thresh = max(2.5, min(6.0, dyn_thresh))
+
+            if abs(weighted) < dyn_thresh:
+                continue
+
+            # Hacim konfirmasyonu (1H mumunda)
+            vol_ok, vol_ratio = check_volume(c1h, 1.3)
+            if not vol_ok:
                 continue
 
             is_long = weighted > 0
@@ -316,7 +420,8 @@ def run_scan():
                 "symbol": symbol, "score": weighted,
                 "direction": "LONG" if is_long else "SHORT",
                 "tp1": calc["tp1"], "tp2": calc["tp2"], "sl": calc["sl"],
-                "rr": calc["rr"], "price": price
+                "rr": calc["rr"], "price": price,
+                "vol_ratio": vol_ratio, "dyn_thresh": round(dyn_thresh, 2),
             })
         except:
             pass
@@ -366,6 +471,8 @@ def run_scan():
                 "tp2_lev": f"{tp2_lev:.2f}",
                 "sl_pct": f"{sl_pct:.2f}",
                 "sl_lev": f"{sl_lev:.2f}",
+                "vol_ratio": sig.get("vol_ratio", "?"),
+                "dyn_thresh": sig.get("dyn_thresh", "?"),
             })
         }
 
@@ -482,50 +589,22 @@ def run_watchdog():
 
         # SL HIT
         elif (is_long and price <= sl) or (not is_long and price >= sl):
-            # Doğru kar/zarar hesabı: SL entry üstündeyse KAR
-            if is_long:
-                actual_pct = (sl - entry) / entry * 100  # + ise kar, - ise zarar
-            else:
-                actual_pct = (entry - sl) / entry * 100  # SHORT için ters
-            lev = abs(actual_pct) * PARAMS["leverage"]
-
+            pct = abs(sl - entry) / entry * 100
+            lev = pct * PARAMS["leverage"]
             update_trade(trade_id, {
                 "status": "SL_HIT",
                 "close_time": datetime.now(timezone.utc).isoformat(),
-                "result_pct": round(actual_pct, 2)
+                "result_pct": round(-pct, 2)
             })
-
-            if actual_pct > 0.05:
-                # SL karda kapandı (entry üstünde)
-                send_telegram(
-                    f"💰 *KAR ile ÇIKIŞ — {sym}*\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"{'📈 LONG' if is_long else '📉 SHORT'} SL karda vurdu\n"
-                    f"✅ Basit: +{actual_pct:.2f}% | 🔗 @{PARAMS['leverage']}x: +{lev:.2f}%\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                )
-                print(f"💰 SL KARDA HIT: {sym} +{actual_pct:.2f}%")
-            elif abs(actual_pct) < 0.1:
-                # Breakeven
-                send_telegram(
-                    f"🔒 *BREAKEVEN ÇIKIŞ — {sym}*\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"{'📈 LONG' if is_long else '📉 SHORT'} breakeven'den kapandı\n"
-                    f"💰 Kar/Zarar: ≈ %0 (güvenli çıkış)\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                )
-                print(f"🔒 BREAKEVEN: {sym}")
-            else:
-                # Gerçek zarar
-                send_telegram(
-                    f"❌ *SL HIT — {sym}*\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"{'📈 LONG' if is_long else '📉 SHORT'} stoploss!\n"
-                    f"💸 Basit: {actual_pct:.2f}% | 🔗 @{PARAMS['leverage']}x: -{lev:.2f}%\n"
-                    f"⛔ 48 saat blacklist'e eklendi\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                )
-                print(f"❌ SL HIT: {sym} {actual_pct:.2f}%")
+            send_telegram(
+                f"❌ *SL HIT — {sym}*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"{'📈 LONG' if is_long else '📉 SHORT'} stoploss!\n"
+                f"💸 Basit: -{pct:.2f}% | 🔗 @{PARAMS['leverage']}x: -{lev:.2f}%\n"
+                f"⛔ 48 saat blacklist'e eklendi\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            print(f"❌ SL HIT: {sym}")
             continue
 
         # +1R SL Yönetimi
@@ -536,14 +615,6 @@ def run_watchdog():
                 update_trade(trade_id, {"sl": new_sl, "sl_moved_profit": True})
                 trade["sl"] = new_sl
                 sl = new_sl
-                send_telegram(
-                    f"📶 *SL TAŞINDI — {sym}*\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"{'📈 LONG' if is_long else '📉 SHORT'} +1R karı korunuyor\n"
-                    f"🛡️ Yeni SL: `{new_sl:.6g}` (karda)\n"
-                    f"📊 Mevcut: `{price:.6g}` | R: {current_r:.2f}R\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                )
                 print(f"+1R SL taşındı: {sym} → {new_sl}")
 
         # Durum satırı
