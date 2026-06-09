@@ -15,6 +15,28 @@ from datetime import datetime, timezone
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN_7", "")
 CHAT_ID        = "2055780815"
 BASE44_TOKEN   = os.environ.get("BASE44_SERVICE_TOKEN", "")
+
+def refresh_token():
+    """Base44 token'ı runtime'da yenile — cache sorununu bypass et"""
+    global BASE44_TOKEN
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["python3", "-c",
+             "import os; import requests; "
+             "r = requests.post('https://api.base44.com/api/auth/service-token', "
+             "headers={'Authorization': 'Bearer ' + os.environ.get('BASE44_SERVICE_TOKEN','')}, timeout=8); "
+             "print(r.json().get('token','')) if r.status_code == 200 else print('')"],
+            capture_output=True, text=True, timeout=15
+        )
+        new_tok = result.stdout.strip()
+        if new_tok and len(new_tok) > 20:
+            BASE44_TOKEN = new_tok
+            print(f"  Token yenilendi ✅")
+        else:
+            print(f"  Token yenileme başarısız, mevcut kullanılıyor")
+    except Exception as e:
+        print(f"  Token refresh hata: {e}")
 APP_ID         = "6a1d973568af9b984e0f1cc8"
 
 SYMBOL         = "XAUUSDT"
@@ -239,14 +261,31 @@ def analyze():
     htf_long  = all(s > 0 for s in htf_scores)
     htf_short = all(s < 0 for s in htf_scores)
 
-    # Eşik: güçlü sinyal
-    THRESHOLD = 3.5
+    # Eşik: uyarı ve sinyal
+    ALERT_THRESHOLD = 3.0   # "Hazır ol" bildirimi
+    THRESHOLD       = 3.5   # Gerçek sinyal
 
     direction = None
     if weighted_avg >= THRESHOLD and htf_long:
         direction = "LONG"
     elif weighted_avg <= -THRESHOLD and htf_short:
         direction = "SHORT"
+    elif abs(weighted_avg) >= ALERT_THRESHOLD:
+        # Hazır ol uyarısı — sinyal eşiğine yakın
+        alert_dir = "LONG" if weighted_avg > 0 else "SHORT"
+        price = get_price()
+        tf_str = " | ".join([f"{k}:{v:+d}" for k,v in scores.items()])
+        msg = f"""⚠️ *XAU HAZIR OL — {alert_dir}*
+━━━━━━━━━━━━━━━━━━
+📊 Skor: `{weighted_avg:+.2f}` (eşik: ±{THRESHOLD})
+💰 Fiyat: `{price:.2f}`
+📐 TF: {tf_str}
+🔔 Sinyal eşiğine yakın, izle!
+━━━━━━━━━━━━━━━━━━
+📡 *Bot 3 — XAU Scalper*"""
+        send_telegram(msg)
+        print(f"  HAZIR OL bildirimi gönderildi: {alert_dir} skor:{weighted_avg:.2f}")
+        return None
     else:
         return None
 
