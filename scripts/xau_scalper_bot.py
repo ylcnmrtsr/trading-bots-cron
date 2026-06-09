@@ -648,13 +648,16 @@ def self_learn(params):
 
 # ── BASE44 CRUD ────────────────────────────────────────────────────────
 def get_open_trade():
+    """Herhangi bir OPEN işlem varsa döndür — Bot3 tek işlem politikası"""
     try:
         r = requests.get(f"{BASE_URL}/ActiveTrade", headers=HEADERS(),
-                         params={"status": "OPEN", "symbol": SYMBOL}, timeout=10)
+                         params={"status": "OPEN"}, timeout=10)
         if r.status_code == 200:
-            for t in r.json():
-                if t.get("symbol") == SYMBOL and t.get("status") == "OPEN":
-                    return t
+            trades = [t for t in r.json() if t.get("status") == "OPEN"]
+            if trades:
+                # Kendi XAU işlemi öncelikli
+                xau = [t for t in trades if t.get("symbol") == SYMBOL]
+                return xau[0] if xau else trades[0]
     except Exception as e:
         print(f"DB GET error: {e}")
     return None
@@ -723,11 +726,17 @@ def send_telegram(msg):
 # ── WATCHDOG ──────────────────────────────────────────────────────────
 def watch_trade(trade):
     trade_id  = trade["id"]
+    symbol    = trade.get("symbol", SYMBOL)
     direction = trade["direction"]
     entry     = float(trade["entry_price"])
     sl        = float(trade["sl"])
     tp        = float(trade["tp"])
     orig_sl   = float(trade.get("original_sl", sl))
+
+    # Bot3 sadece kendi XAU işlemini izler — diğer botların işlemlerine dokunma
+    if symbol != SYMBOL:
+        print(f"  Bot3: {symbol} işlemi açık (Bot2) — scan atlanıyor, watch yok")
+        return
 
     price = get_price()
     if not price:
