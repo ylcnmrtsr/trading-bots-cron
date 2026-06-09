@@ -404,11 +404,21 @@ def analyze(params):
     elif abs(weighted_avg) >= dyn_alert:
         alert_dir = "LONG" if weighted_avg > 0 else "SHORT"
         cache_key = f"bot3_alert_{alert_dir}"
-        last_alert = get_cache(cache_key)
+        cache_key_active = f"bot3_alert_active_{alert_dir}"
         now_ts = int(time.time())
-        if last_alert and (now_ts - int(last_alert)) < 900:
-            print(f"  HAZIR OL cooldown ({alert_dir}), atlandı")
+
+        # Ters yönde aktif alert varsa sıfırla
+        opposite = "SHORT" if alert_dir == "LONG" else "LONG"
+        set_cache(f"bot3_alert_active_{opposite}", "0")
+
+        # Şu an alert bölgesinde miyiz?
+        is_active = get_cache(cache_key_active)
+        if is_active and is_active == "1":
+            print(f"  HAZIR OL zaten gönderildi ({alert_dir}), skor bölgeden çıkmadan tekrar atılmaz")
             return None
+
+        # İlk kez bu bölgeye giriş → gönder ve flag'i set et
+        set_cache(cache_key_active, "1")
         set_cache(cache_key, str(now_ts))
         price = get_price()
         tf_str = " | ".join([f"{k}:{v:+d}" for k, v in scores.items()])
@@ -424,6 +434,9 @@ def analyze(params):
         print(f"  HAZIR OL: {alert_dir} skor:{weighted_avg:.2f}")
         return None
     else:
+        # Skor HAZIR OL bölgesinin altına düştü → flag sıfırla (tekrar girinc bildirim gelsin)
+        set_cache("bot3_alert_active_LONG", "0")
+        set_cache("bot3_alert_active_SHORT", "0")
         return None
 
     # ── HACIM KONFİRMASYONU ──
