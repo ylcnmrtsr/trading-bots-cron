@@ -119,6 +119,22 @@ COIN_PARAM_DEFAULTS = {
     "wins": 0,
     "losses": 0,
     "version": 1,
+    # Her indikatörün güvenilirlik ağırlığı (1.0=tam, 0.5=yarı, 0.0=devre dışı)
+    "ind_weights": {
+        "rsi":   1.0,
+        "ema":   1.0,
+        "macd":  1.0,
+        "stoch": 1.0,
+        "bb":    1.0,
+    },
+    # Her indikatörün geçmiş isabeti: {ind: [toplam_sinyal, doğru_sinyal]}
+    "ind_stats": {
+        "rsi":   [0, 0],
+        "ema":   [0, 0],
+        "macd":  [0, 0],
+        "stoch": [0, 0],
+        "bb":    [0, 0],
+    },
 }
 
 def get_coin_params(symbol):
@@ -165,9 +181,9 @@ def self_learn():
             by_symbol[t["symbol"]].append(t)
 
         for symbol, trades in by_symbol.items():
-            recent = sorted(trades, key=lambda x: x.get("close_time", ""), reverse=True)[:6]
+            recent = sorted(trades, key=lambda x: x.get("close_time", ""), reverse=True)[:8]
             if len(recent) < 3:
-                continue  # bu coin için yeterli geçmiş yok, atla
+                continue
 
             wins   = [t for t in recent if float(t.get("result_pct", 0)) > 0]
             losses = [t for t in recent if float(t.get("result_pct", 0)) <= 0]
@@ -176,8 +192,68 @@ def self_learn():
 
             p = get_coin_params(symbol)
             changed = []
+            ind_w = p.get("ind_weights", COIN_PARAM_DEFAULTS["ind_weights"].copy())
+            ind_stats = p.get("ind_stats", {k: [0, 0] for k in ["rsi","ema","macd","stoch","bb"]})
 
-            # Win rate düşükse → bu coin için daha seçici ol
+            # ── DERİN ANALİZ: Her indikatörü ayrı değerlendir ──────────
+            # Her işlemin notes'ından entry_snapshot çek
+            for trade in recent:
+                try:
+                    notes = json.loads(trade.get("notes") or "{}")
+                    snap  = notes.get("entry_snapshot", {})
+                    if not snap:
+                        continue
+                    outcome_win = float(trade.get("result_pct", 0)) > 0
+                    direction   = trade.get("direction", "LONG")
+                    sign        = 1 if direction == "LONG" else -1
+
+                    # Her indikatörün işlem yönüne katkısını kontrol et
+                    # Pozitif katkı = işlem yönünü destekledi, negatif = karşı çıktı
+                    for ind in ["rsi", "ema", "macd", "stoch", "bb"]:
+                        # 1h ve 4h skorlarını al (daha güvenilir TF)
+                        contrib_1h = snap.get("1h", {}).get(ind, 0)
+                        contrib_4h = snap.get("4h", {}).get(ind, 0)
+                        contrib    = contrib_1h * 0.4 + contrib_4h * 0.6
+
+                        # İndikatör işlem yönünü desteklediyse (aynı işaret)
+                        supported_direction = (contrib * sign) > 0
+
+                        if supported_direction:
+                            # Bu indikatör giriş kararını destekledi
+                            ind_stats[ind][0] += 1          # toplam sinyal
+                            if outcome_win:
+                                ind_stats[ind][1] += 1      # doğru sinyal
+                except:
+                    continue
+
+            # ── İNDİKATÖR AĞIRLIKLARINI GÜNCELLE ──────────────────────
+            ind_analysis = []
+            for ind in ["rsi", "ema", "macd", "stoch", "bb"]:
+                total_sig, correct_sig = ind_stats.get(ind, [0, 0])
+                if total_sig < 3:
+                    continue  # yeterli veri yok bu indikatör için
+                ind_wr = correct_sig / total_sig
+
+                old_w = ind_w.get(ind, 1.0)
+                if ind_wr < 0.30:
+                    # Bu indikatör %30'dan az doğru → yarıya indir (min 0.2)
+                    new_w = round(max(old_w - 0.2, 0.2), 1)
+                elif ind_wr < 0.45:
+                    new_w = round(max(old_w - 0.1, 0.3), 1)
+                elif ind_wr >= 0.70:
+                    # Çok güvenilir → ağırlığı artır (max 1.5)
+                    new_w = round(min(old_w + 0.1, 1.5), 1)
+                elif ind_wr >= 0.60:
+                    new_w = round(min(old_w + 0.05, 1.3), 1)
+                else:
+                    new_w = old_w
+
+                if new_w != old_w:
+                    ind_analysis.append(f"{ind}:{old_w}→{new_w}(WR:{ind_wr:.0%})")
+                    ind_w[ind] = new_w
+                    changed.append(f"{ind}_w:{new_w}")
+
+            # ── GENEL PARAMETRELER ──────────────────────────────────────
             if win_rate < 0.38:
                 if p["minScoreThreshold"] < 5.5:
                     p["minScoreThreshold"] = round(p["minScoreThreshold"] + 0.3, 1)
@@ -185,27 +261,28 @@ def self_learn():
                 if p["maxSlPct"] > 2.0:
                     p["maxSlPct"] = round(p["maxSlPct"] - 0.3, 1)
                     changed.append(f"sl↓{p['maxSlPct']}")
-            # Win rate yüksekse → bu coin için biraz daha agresif ol
             elif win_rate >= 0.70:
                 if p["minScoreThreshold"] > 2.5:
                     p["minScoreThreshold"] = round(p["minScoreThreshold"] - 0.1, 1)
                     changed.append(f"score↓{p['minScoreThreshold']}")
-
-            # Ortalama kayıp büyükse SL sıkılaştır
             if avg_loss > 3.5 and p["maxSlPct"] > 2.0:
                 p["maxSlPct"] = round(p["maxSlPct"] - 0.2, 1)
                 changed.append(f"sl↓{p['maxSlPct']}")
 
-            p["wins"]    = len(wins)
-            p["losses"]  = len(losses)
-            p["version"] = p.get("version", 1) + (1 if changed else 0)
+            p["wins"]       = len(wins)
+            p["losses"]     = len(losses)
+            p["ind_weights"] = ind_w
+            p["ind_stats"]   = ind_stats
+            p["version"]     = p.get("version", 1) + (1 if changed else 0)
 
             save_coin_params(symbol, p)
 
             sym_short = symbol.replace("USDT", "")
-            if changed:
+            if ind_analysis:
+                print(f"  Self-learn [{sym_short}]: WR={win_rate:.0%} | İnd: {' | '.join(ind_analysis)}")
+            if changed and not ind_analysis:
                 print(f"  Self-learn [{sym_short}]: WR={win_rate:.0%} | {', '.join(changed)}")
-            else:
+            if not changed:
                 print(f"  Self-learn [{sym_short}]: WR={win_rate:.0%} AvgLoss={avg_loss:.2f}% — stabil")
 
     except Exception as e:
@@ -325,53 +402,78 @@ def find_sr_levels(candles):
 
     return cluster(res)[-6:], cluster(sup)[:6]
 
-def score_tf(candles):
+def score_tf_detailed(candles, ind_weights=None):
+    """
+    Her indikatörün katkısını ayrı döndür.
+    ind_weights: coin bazlı öğrenilmiş ağırlıklar (1.0 = normal, 0.5 = yarı güvenilir, 0.0 = devre dışı)
+    Döner: (toplam_skor, {indikatör: (katkı, ham_değer)})
+    """
     if not candles or len(candles) < 50:
-        return 0
+        return 0, {}
     closes = [c["close"] for c in candles]
-    price = closes[-1]
-    score = 0
+    price  = closes[-1]
+    w      = ind_weights or {}
 
+    breakdown = {}
+
+    # RSI
     rsi = calc_rsi(closes)
-    if rsi < 30: score += 3
-    elif rsi < 40: score += 2
-    elif rsi < 45: score += 1
-    elif rsi > 70: score -= 3
-    elif rsi > 60: score -= 2
-    elif rsi > 55: score -= 1
+    if   rsi < 30: rsi_contrib = +3
+    elif rsi < 40: rsi_contrib = +2
+    elif rsi < 45: rsi_contrib = +1
+    elif rsi > 70: rsi_contrib = -3
+    elif rsi > 60: rsi_contrib = -2
+    elif rsi > 55: rsi_contrib = -1
+    else:          rsi_contrib = 0
+    breakdown["rsi"] = (round(rsi_contrib * w.get("rsi", 1.0)), round(rsi, 1))
 
-    ema9 = calc_ema(closes, 9)
+    # EMA trend
+    ema9  = calc_ema(closes, 9)
     ema21 = calc_ema(closes, 21)
     ema50 = calc_ema(closes, 50)
-    if ema9 > ema21 > ema50: score += 2
-    elif ema9 < ema21 < ema50: score -= 2
-    if price > ema50: score += 1
-    else: score -= 1
+    if   ema9 > ema21 > ema50: ema_contrib = +2
+    elif ema9 < ema21 < ema50: ema_contrib = -2
+    else:                       ema_contrib = 0
+    ema_contrib += 1 if price > ema50 else -1
+    ema_trend = "bull" if ema9 > ema21 else "bear"
+    breakdown["ema"] = (round(ema_contrib * w.get("ema", 1.0)), ema_trend)
 
+    # MACD
+    macd_contrib = 0
     if len(closes) >= 35:
-        ema12 = calc_ema(closes, 12)
-        ema26 = calc_ema(closes, 26)
-        macd = ema12 - ema26
-        if macd > 0: score += 2
-        else: score -= 2
+        macd = calc_ema(closes, 12) - calc_ema(closes, 26)
+        macd_contrib = +2 if macd > 0 else -2
+    breakdown["macd"] = (round(macd_contrib * w.get("macd", 1.0)), "pos" if macd_contrib > 0 else "neg")
 
+    # Stochastic
+    stoch_contrib = 0
     if len(candles) >= 14:
-        sl = candles[-14:]
-        lo_min = min(c["low"] for c in sl)
+        sl     = candles[-14:]
+        lo_min = min(c["low"]  for c in sl)
         hi_max = max(c["high"] for c in sl)
         k = ((price - lo_min) / (hi_max - lo_min)) * 100 if hi_max != lo_min else 50
-        if k < 20: score += 2
-        elif k < 30: score += 1
-        elif k > 80: score -= 2
-        elif k > 70: score -= 1
+        if   k < 20: stoch_contrib = +2
+        elif k < 30: stoch_contrib = +1
+        elif k > 80: stoch_contrib = -2
+        elif k > 70: stoch_contrib = -1
+    breakdown["stoch"] = (round(stoch_contrib * w.get("stoch", 1.0)), round(k if len(candles) >= 14 else 50, 1))
 
+    # Bollinger
+    bb_contrib = 0
     if len(closes) >= 20:
         closes20 = closes[-20:]
         mid = sum(closes20) / 20
         std = math.sqrt(sum((x - mid)**2 for x in closes20) / 20)
-        if price <= mid - 2*std: score += 2
-        elif price >= mid + 2*std: score -= 2
+        if   price <= mid - 2*std: bb_contrib = +2
+        elif price >= mid + 2*std: bb_contrib = -2
+    breakdown["bb"] = (round(bb_contrib * w.get("bb", 1.0)), round(price - mid if len(closes) >= 20 else 0, 2))
 
+    total = sum(v[0] for v in breakdown.values())
+    return total, breakdown
+
+def score_tf(candles, ind_weights=None):
+    """Geriye uyumluluk için — sadece skoru döndür."""
+    score, _ = score_tf_detailed(candles, ind_weights)
     return score
 
 
@@ -453,10 +555,29 @@ def run_scan():
             if not c1h or not c4h:
                 continue
 
-            s15 = score_tf(c15m)
-            s1h = score_tf(c1h)
-            s4h = score_tf(c4h)
+            # Bu coin için öğrenilmiş indikatör ağırlıklarını al
+            ind_w = coin_p.get("ind_weights", COIN_PARAM_DEFAULTS["ind_weights"])
+
+            s15, bd15 = score_tf_detailed(c15m, ind_w)
+            s1h, bd1h = score_tf_detailed(c1h,  ind_w)
+            s4h, bd4h = score_tf_detailed(c4h,  ind_w)
             weighted = (s15 * 1 + s1h * 2 + s4h * 3) / 6
+
+            # Giriş snapshot'ı — hangi indikatör ne dedi
+            entry_snapshot = {
+                "15m": {k: v[0] for k, v in bd15.items()},
+                "1h":  {k: v[0] for k, v in bd1h.items()},
+                "4h":  {k: v[0] for k, v in bd4h.items()},
+                "raw": {  # ham değerler
+                    "rsi_15m":  bd15.get("rsi", [0,0])[1],
+                    "rsi_1h":   bd1h.get("rsi", [0,0])[1],
+                    "ema_15m":  bd15.get("ema", [0,""])[1],
+                    "ema_1h":   bd1h.get("ema", [0,""])[1],
+                    "macd_1h":  bd1h.get("macd", [0,""])[1],
+                    "stoch_1h": bd1h.get("stoch", [0,0])[1],
+                    "bb_1h":    bd1h.get("bb", [0,0])[1],
+                }
+            }
 
             # Bu coin için öğrenilmiş parametreleri yükle
             coin_p = get_coin_params(symbol)
@@ -496,6 +617,7 @@ def run_scan():
                 "rr": calc["rr"], "price": price,
                 "vol_ratio": vol_ratio, "dyn_thresh": round(dyn_thresh, 2),
                 "coin_score_thresh": round(coin_score_thresh, 1),
+                "entry_snapshot": entry_snapshot,
             })
         except:
             pass
@@ -548,6 +670,7 @@ def run_scan():
                 "vol_ratio": sig.get("vol_ratio", "?"),
                 "dyn_thresh": sig.get("dyn_thresh", "?"),
                 "coin_score_thresh": sig.get("coin_score_thresh", "?"),
+                "entry_snapshot": sig.get("entry_snapshot", {}),
             })
         }
 
