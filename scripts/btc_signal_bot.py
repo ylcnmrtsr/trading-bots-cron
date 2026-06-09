@@ -148,6 +148,62 @@ def check_volume(candles, mult=1.2):
     ratio = last_vol / avg_vol if avg_vol > 0 else 1.0
     return ratio >= mult, round(ratio, 2)
 
+
+def get_order_book_signal(symbol, price, product_type="USDT-FUTURES", range_pct=0.005):
+    try:
+        r = requests.get(
+            "https://api.bitget.com/api/v2/mix/market/merge-depth",
+            params={"symbol": symbol, "productType": product_type, "limit": "100"},
+            timeout=5
+        )
+        if r.status_code != 200:
+            return 0, 0, 0, "OB hata"
+        d = r.json()["data"]
+        asks = [[float(x[0]), float(x[1])] for x in d["asks"]]
+        bids = [[float(x[0]), float(x[1])] for x in d["bids"]]
+        ask_wall = sum(x[1] for x in asks if x[0] <= price * (1 + range_pct))
+        bid_wall = sum(x[1] for x in bids if x[0] >= price * (1 - range_pct))
+        total = ask_wall + bid_wall
+        if total == 0:
+            return 0, 0, 0, "OB veri yok"
+        bid_ratio = bid_wall / total
+        avg_ask_vol = sum(a[1] for a in asks) / len(asks)
+        avg_bid_vol = sum(b[1] for b in bids) / len(bids)
+        ask_liq = [x[0] for x in asks if x[1] > avg_ask_vol * 3]
+        bid_liq = [x[0] for x in bids if x[1] > avg_bid_vol * 3]
+        wall_note = []
+        if ask_liq: wall_note.append(f"Satış@{ask_liq[0]:.0f}")
+        if bid_liq: wall_note.append(f"Alış@{bid_liq[0]:.0f}")
+        wall_note = " | ".join(wall_note) if wall_note else "Duvar yok"
+        ob_score = 1 if bid_ratio >= 0.60 else (-1 if bid_ratio <= 0.40 else 0)
+        return ob_score, round(bid_wall,1), round(ask_wall,1), wall_note
+    except Exception as e:
+        return 0, 0, 0, f"OB err:{e}"
+
+
+def get_tp_from_liquidity(symbol, price, direction, product_type="USDT-FUTURES"):
+    try:
+        r = requests.get(
+            "https://api.bitget.com/api/v2/mix/market/merge-depth",
+            params={"symbol": symbol, "productType": product_type, "limit": "200"},
+            timeout=5
+        )
+        if r.status_code != 200:
+            return None
+        d = r.json()["data"]
+        asks = [[float(x[0]), float(x[1])] for x in d["asks"]]
+        bids = [[float(x[0]), float(x[1])] for x in d["bids"]]
+        avg_ask = sum(a[1] for a in asks) / len(asks) if asks else 0
+        avg_bid = sum(b[1] for b in bids) / len(bids) if bids else 0
+        if direction == "LONG":
+            walls = [x[0] for x in asks if x[0] > price and x[1] > avg_ask * 2.5]
+            return min(walls) if walls else None
+        else:
+            walls = [x[0] for x in bids if x[0] < price and x[1] > avg_bid * 2.5]
+            return max(walls) if walls else None
+    except:
+        return None
+
 def self_learn_btc(cache):
     """BTC geçmiş sinyalleri analiz et, eşiği otomatik ayarla. Sessiz çalışır."""
     try:
@@ -252,8 +308,12 @@ def main():
     res_str = f"{nearest_res:.0f}" if nearest_res else "-"
     sup_str = f"{nearest_sup:.0f}" if nearest_sup else "-"
 
-    is_long_signal  = weighted >= sig_threshold and vol_ok_1h
-    is_short_signal = weighted <= -sig_threshold and vol_ok_1h
+    # ── ORDER BOOK filtresi ──
+    ob_score, bid_wall, ask_wall, wall_note = get_order_book_signal("BTCUSDT", price)
+    print(f"  OB: bid={bid_wall} ask={ask_wall} skor={ob_score} | {wall_note}")
+
+    is_long_signal  = weighted >= sig_threshold and vol_ok_1h and ob_score >= 0
+    is_short_signal = weighted <= -sig_threshold and vol_ok_1h and ob_score <= 0
     is_long_ready   = rdy_threshold <= weighted < sig_threshold
     is_short_ready  = -sig_threshold < weighted <= -rdy_threshold
 
@@ -271,7 +331,9 @@ def main():
                 f"📊 Yön: *{direction}*\n"
                 f"📈 Skor: {weighted:.1f} | {scores_str}\n"
                 f"📐 Resistance: `{res_str}` | Support: `{sup_str}`\n"
-                f"📦 Hacim: `{vol_ratio_1h:.1f}x` | 📉 ATR%: `{atr_pct:.2f}`"
+                f"📦 Hacim: `{vol_ratio_1h:.1f}x` | 📉 ATR%: `{atr_pct:.2f}`\n"
+                f"📚 OB: Alış `{bid_wall:.0f}` / Satış `{ask_wall:.0f}` | {wall_note}" +
+                (f"\n🎯 Likidasyon TP: `{liq_tp:.0f}`" if liq_tp else "")
             )
             cache["last_signal"] = direction_raw
             cache["last_ready"] = ""
