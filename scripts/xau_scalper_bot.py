@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Bot 3 — XAU/USDT Scalper Bot v2
-- Multi-timeframe analiz: 1m, 5m, 15m
+- Multi-timeframe analiz: 1m, 5m, 15m, 30m (hafif), 1H (hafif)
 - Hacim konfirmasyonu (fake sinyal filtresi)
 - Mum pattern kontrolü (engulfing, pin bar, marubozu)
 - ATR dinamik eşik (volatiliteye uyarlanır)
@@ -362,8 +362,11 @@ TIMEFRAMES = [
     ("1m",  "1m",  100),
     ("5m",  "5m",  100),
     ("15m", "15m", 100),
+    ("30m", "30m", 80),
+    ("1H",  "1H",  80),
 ]
-TF_WEIGHTS = {"1m": 1.0, "5m": 2.0, "15m": 3.0}
+# 1m×1 + 5m×2 + 15m×3 + 30m×0.5 + 1H×0.5 = toplam 7
+TF_WEIGHTS = {"1m": 1.0, "5m": 2.0, "15m": 3.0, "30m": 0.5, "1H": 0.5}
 
 # ── ANALİZ ────────────────────────────────────────────────────────────
 def analyze(params):
