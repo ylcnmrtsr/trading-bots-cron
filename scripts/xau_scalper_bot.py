@@ -491,8 +491,7 @@ def analyze(params):
 🔔 Sinyal eşiğine yakın, izle!
 ━━━━━━━━━━━━━━━━━━
 📚 OB: Alış `{bid_wall:.1f}` / Satış `{ask_wall:.1f}` | {wall_note}
-🎯 Liq TP: `{liq_tp:.2f}`
-━━━━━━━━━━━━━━━━━━
+""" + (f"🎯 Liq TP: `{liq_tp:.2f}`\n" if liq_tp else "") + """━━━━━━━━━━━━━━━━━━
 📡 *Bot 3 — XAU Scalper*"""
         send_telegram(msg)
         print(f"  HAZIR OL: {alert_dir} skor:{weighted_avg:.2f}")
@@ -741,9 +740,6 @@ def watch_trade(trade):
 🎯 TP: `{tp:.2f}` (+{tp_pct:.2f}%) | 🔒 SL: `{orig_sl:.2f}` (-{sl_pct:.2f}%)
 📊 Sonuç: `{result_pct:+.2f}%` | ⚖️ RR: 1:{rr}
 ━━━━━━━━━━━━━━━━━━
-📚 OB: Alış `{bid_wall:.1f}` / Satış `{ask_wall:.1f}` | {wall_note}
-🎯 Liq TP: `{liq_tp:.2f}`
-━━━━━━━━━━━━━━━━━━
 📡 *Bot 3 — XAU Scalper*""")
         print(f"TP HIT: {direction} {result_pct:+.2f}%")
 
@@ -760,9 +756,6 @@ def watch_trade(trade):
 📍 Fiyat: `{price:.2f}` | 💰 Giriş: `{entry:.2f}`
 🎯 TP: `{tp:.2f}` (+{tp_pct:.2f}%) | 🔒 SL: `{sl:.2f}` (-{sl_pct:.2f}%)
 📊 Sonuç: `{result_pct:+.2f}%` | ⚖️ RR: 1:{rr}
-━━━━━━━━━━━━━━━━━━
-📚 OB: Alış `{bid_wall:.1f}` / Satış `{ask_wall:.1f}` | {wall_note}
-🎯 Liq TP: `{liq_tp:.2f}`
 ━━━━━━━━━━━━━━━━━━
 📡 *Bot 3 — XAU Scalper*""")
         print(f"SL HIT: {direction} {result_pct:+.2f}%")
