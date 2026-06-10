@@ -650,16 +650,6 @@ def get_open_trade():
         print(f"DB GET error: {e}")
     return None
 
-def count_open_trades():
-    """Bot2 dahil toplam açık işlem sayısını döndür"""
-    try:
-        r = requests.get(f"{BASE_URL}/ActiveTrade", headers=HEADERS(),
-                         params={"status": "OPEN"}, timeout=10)
-        if r.status_code == 200:
-            return len([t for t in r.json() if t.get("status") == "OPEN"])
-    except Exception as e:
-        print(f"DB count error: {e}")
-    return 0
 
 def create_trade(signal):
     payload = {
@@ -825,15 +815,7 @@ def main():
         print(f"  Açık işlem izleniyor: {open_trade['direction']} | ID:{open_trade['id']}")
         watch_trade(open_trade)
 
-    # Toplam açık işlem sayısı kontrolü (Bot2 dahil max 3)
-    MAX_OPEN = 3
-    total_open = count_open_trades()
-    if mode in ("scan", "both") and not open_trade and total_open < MAX_OPEN:
-        print(f"🔍 XAU taranıyor... (toplam açık: {total_open}/{MAX_OPEN})")
-    elif mode in ("scan", "both") and not open_trade and total_open >= MAX_OPEN:
-        print(f"  Bot3 scan atlandı: {total_open} açık işlem var (limit {MAX_OPEN})")
-
-    if mode in ("scan", "both") and not open_trade and total_open < MAX_OPEN:
+    if mode in ("scan", "both") and not open_trade:
         print("🔍 XAU taranıyor...")
         signal = analyze(params)
         if signal:
