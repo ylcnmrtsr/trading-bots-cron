@@ -43,9 +43,12 @@ def b44_headers():
     }
 
 def get_open_trades():
+    """Bot2'ye ait açık işlemleri döndür — XAUUSDT (Bot3) hariç"""
     r = requests.get(BASE44_API, headers=b44_headers(), params={"status": "OPEN"}, timeout=15)
     if r.status_code == 200:
-        return r.json() if isinstance(r.json(), list) else r.json().get("records", [])
+        trades = r.json() if isinstance(r.json(), list) else r.json().get("records", [])
+        # Bot3'ün XAU işlemlerini Bot2 slot sayımından çıkar
+        return [t for t in trades if t.get("symbol") != "XAUUSDT"]
     print(f"DB GET error: {r.status_code} {r.text[:100]}")
     return []
 
