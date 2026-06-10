@@ -18,7 +18,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN_3", "")
 CHAT_ID = "2055780815"
 BITGET_BASE = "https://api.bitget.com/api/v2"
 BASE44_API = "https://app.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/ActiveTrade"
-BASE44_TOKEN = os.environ.get("BASE44_API_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJjbGllbnRfaWQiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJhcHBfaWQiOiI2YTFkOTczNTY4YWY5Yjk4NGUwZjFjYzgiLCJhdWQiOiJiYXNlNDRfYXBpIiwic2NvcGUiOiJhcHAuYWNjZXNzIiwiZXhwIjoxNzgxMTA4MzM2LCJpYXQiOjE3ODExMDQ3MzZ9.huH3BNmX2XGYW1vlOzfk81-B2ztMkdLGN6qjG8hG1-s")
+BASE44_TOKEN = os.environ.get("BASE44_API_KEY", "")
 
 PARAMS = {
     "minRR": 2.0,
@@ -38,7 +38,7 @@ MODE = sys.argv[1] if len(sys.argv) > 1 else "watchdog"
 # ── BASE44 DB ─────────────────────────────────────────────────────────
 def b44_headers():
     return {
-        "Authorization": f"Bearer {BASE44_TOKEN}",
+        "api_key": BASE44_TOKEN,
         "Content-Type": "application/json"
     }
 
@@ -215,17 +215,14 @@ def get_tp_from_liquidity(symbol, price, direction, product_type="USDT-FUTURES")
 
 def self_learn():
     """
-    Coin bazlı derin öğrenme:
-    - Her indikatörün giriş kararını neden desteklediğini kaydeder
-    - Kapanış sonucuyla karşılaştırarak o indikatörün "bu coinde" güvenilirliğini ölçer
-    - Zayıf indikatörlerin ağırlığını düşürür, güçlüleri artırır
-    - Eşik ve SL parametrelerini de win_rate'e göre ayarlar
-    - Her değişikliği Telegram'a detaylı raporlar
+    Tüm kapanan işlemleri coin bazlı gruplandır.
+    Her coin kendi geçmişinden öğrenir — diğer coinleri etkilemez.
+    Sessiz çalışır.
     """
     try:
         all_trades = get_all_trades(100)
         closed = [t for t in all_trades
-                  if t.get("status") in ("TP_HIT", "SL_HIT", "BREAKEVEN")
+                  if t.get("status") in ("TP_HIT", "SL_HIT")
                   and t.get("result_pct") is not None
                   and t.get("symbol")]
 
@@ -233,37 +230,30 @@ def self_learn():
             print("  Bot2 self-learn: hiç kapanan işlem yok")
             return
 
+        # Coin bazlı gruplama
         from collections import defaultdict
         by_symbol = defaultdict(list)
         for t in closed:
             by_symbol[t["symbol"]].append(t)
 
-        learn_reports = []  # Telegram için değişen coinler
-
         for symbol, trades in by_symbol.items():
-            # Son 10 işlemi al, yeniden eskiye sırala
-            recent = sorted(trades, key=lambda x: x.get("close_time",""), reverse=True)[:10]
+            recent = sorted(trades, key=lambda x: x.get("close_time", ""), reverse=True)[:8]
             if len(recent) < 3:
                 continue
 
             wins   = [t for t in recent if float(t.get("result_pct", 0)) > 0]
             losses = [t for t in recent if float(t.get("result_pct", 0)) <= 0]
-            win_rate  = len(wins) / len(recent)
-            avg_loss  = sum(abs(float(t.get("result_pct", 0))) for t in losses) / len(losses) if losses else 0
-            avg_win   = sum(float(t.get("result_pct", 0)) for t in wins) / len(wins) if wins else 0
+            win_rate = len(wins) / len(recent)
+            avg_loss = sum(abs(float(t.get("result_pct", 0))) for t in losses) / len(losses) if losses else 0
 
-            p       = get_coin_params(symbol)
+            p = get_coin_params(symbol)
             changed = []
-            ind_w   = p.get("ind_weights", COIN_PARAM_DEFAULTS["ind_weights"].copy())
+            ind_w = p.get("ind_weights", COIN_PARAM_DEFAULTS["ind_weights"].copy())
+            ind_stats = p.get("ind_stats", {k: [0, 0] for k in ["rsi","ema","macd","stoch","bb"]})
 
-            # ── İNDİKATÖR BAZLI NEDEN ANALİZİ ──────────────────────────
-            # Her indikatör için: {toplam_destek, dogru_destek, karsi_dogru, karsi_yanlis}
-            # karsi = indikatör işlem yönüne karşı çıktı ama giriş yapıldı
-            IND_KEYS = ["rsi", "ema", "macd", "stoch", "bb"]
-            ind_stats = {k: {"sup_ok":0,"sup_fail":0,"opp_ok":0,"opp_fail":0}
-                         for k in IND_KEYS}
-
-            for i, trade in enumerate(recent):
+            # ── DERİN ANALİZ: Her indikatörü ayrı değerlendir ──────────
+            # Her işlemin notes'ından entry_snapshot çek
+            for trade in recent:
                 try:
                     notes = json.loads(trade.get("notes") or "{}")
                     snap  = notes.get("entry_snapshot", {})
@@ -272,140 +262,87 @@ def self_learn():
                     outcome_win = float(trade.get("result_pct", 0)) > 0
                     direction   = trade.get("direction", "LONG")
                     sign        = 1 if direction == "LONG" else -1
-                    # Yeni işlemlere daha fazla ağırlık ver (exponential decay)
-                    recency_w = 0.9 ** i  # i=0 → 1.0, i=1 → 0.9, i=2 → 0.81 ...
 
-                    for ind in IND_KEYS:
-                        # 15m hafif, 1h orta, 4h ağır
-                        c15 = snap.get("15m", {}).get(ind, 0) or 0
-                        c1h = snap.get("1h",  {}).get(ind, 0) or 0
-                        c4h = snap.get("4h",  {}).get(ind, 0) or 0
-                        contrib = c15 * 0.2 + c1h * 0.4 + c4h * 0.4
+                    # Her indikatörün işlem yönüne katkısını kontrol et
+                    # Pozitif katkı = işlem yönünü destekledi, negatif = karşı çıktı
+                    for ind in ["rsi", "ema", "macd", "stoch", "bb"]:
+                        # 1h ve 4h skorlarını al (daha güvenilir TF)
+                        contrib_1h = snap.get("1h", {}).get(ind, 0)
+                        contrib_4h = snap.get("4h", {}).get(ind, 0)
+                        contrib    = contrib_1h * 0.4 + contrib_4h * 0.6
 
-                        supported = (contrib * sign) > 0  # ind işlem yönünü destekledi mi?
-                        opposed   = (contrib * sign) < 0  # ind karşı çıktı mı?
+                        # İndikatör işlem yönünü desteklediyse (aynı işaret)
+                        supported_direction = (contrib * sign) > 0
 
-                        if supported:
+                        if supported_direction:
+                            # Bu indikatör giriş kararını destekledi
+                            ind_stats[ind][0] += 1          # toplam sinyal
                             if outcome_win:
-                                ind_stats[ind]["sup_ok"]   += recency_w
-                            else:
-                                ind_stats[ind]["sup_fail"] += recency_w
-                                # Neden yanlış gitti? — bağlam logla
-                                raw = snap.get("raw", {})
-                                rsi_val  = raw.get(f"rsi_{ind}_1h" if ind == "rsi" else "rsi_1h", "?")
-                        elif opposed:
-                            if outcome_win:
-                                ind_stats[ind]["opp_fail"] += recency_w  # karşı çıktı ama kazandık → ind yanıldı
-                            else:
-                                ind_stats[ind]["opp_ok"]   += recency_w  # karşı çıktı ve haklıydı
+                                ind_stats[ind][1] += 1      # doğru sinyal
                 except:
                     continue
 
-            # ── AĞIRLIK GÜNCELLEME: Güvenilirlik skoru bazlı ──────────
-            ind_report = []
-            for ind in IND_KEYS:
-                st = ind_stats[ind]
-                total_active = st["sup_ok"] + st["sup_fail"]
-                if total_active < 2.0:
-                    continue  # yeterli veri yok
-
-                accuracy = st["sup_ok"] / total_active  # desteklediğinde ne kadar doğru?
-
-                # Karşı çıktığında ne kadar haklıydı?
-                total_opp = st["opp_ok"] + st["opp_fail"]
-                opp_accuracy = st["opp_ok"] / total_opp if total_opp > 1 else 0.5
+            # ── İNDİKATÖR AĞIRLIKLARINI GÜNCELLE ──────────────────────
+            ind_analysis = []
+            for ind in ["rsi", "ema", "macd", "stoch", "bb"]:
+                total_sig, correct_sig = ind_stats.get(ind, [0, 0])
+                if total_sig < 3:
+                    continue  # yeterli veri yok bu indikatör için
+                ind_wr = correct_sig / total_sig
 
                 old_w = ind_w.get(ind, 1.0)
-
-                # Güvenilirlik skoru = desteklediğinde doğruluk * 0.7 + karşı çıktığında doğruluk * 0.3
-                reliability = accuracy * 0.7 + opp_accuracy * 0.3
-
-                if reliability < 0.30:
-                    new_w = round(max(old_w - 0.25, 0.1), 2)
-                    reason = f"zayıf(%{reliability:.0%})"
-                elif reliability < 0.45:
-                    new_w = round(max(old_w - 0.1, 0.3), 2)
-                    reason = f"düşük(%{reliability:.0%})"
-                elif reliability >= 0.72:
-                    new_w = round(min(old_w + 0.15, 1.8), 2)
-                    reason = f"güçlü(%{reliability:.0%})"
-                elif reliability >= 0.60:
-                    new_w = round(min(old_w + 0.05, 1.5), 2)
-                    reason = f"iyi(%{reliability:.0%})"
+                if ind_wr < 0.30:
+                    # Bu indikatör %30'dan az doğru → yarıya indir (min 0.2)
+                    new_w = round(max(old_w - 0.2, 0.2), 1)
+                elif ind_wr < 0.45:
+                    new_w = round(max(old_w - 0.1, 0.3), 1)
+                elif ind_wr >= 0.70:
+                    # Çok güvenilir → ağırlığı artır (max 1.5)
+                    new_w = round(min(old_w + 0.1, 1.5), 1)
+                elif ind_wr >= 0.60:
+                    new_w = round(min(old_w + 0.05, 1.3), 1)
                 else:
                     new_w = old_w
-                    reason = None
 
                 if new_w != old_w:
-                    arrow = "↑" if new_w > old_w else "↓"
-                    ind_report.append(f"{ind}{arrow}{new_w}({reason})")
+                    ind_analysis.append(f"{ind}:{old_w}→{new_w}(WR:{ind_wr:.0%})")
                     ind_w[ind] = new_w
                     changed.append(f"{ind}_w:{new_w}")
 
-            # ── EŞIK VE SL AYARLA ──────────────────────────────────────
-            if win_rate < 0.35:
+            # ── GENEL PARAMETRELER ──────────────────────────────────────
+            if win_rate < 0.38:
                 if p["minScoreThreshold"] < 5.5:
                     p["minScoreThreshold"] = round(p["minScoreThreshold"] + 0.3, 1)
                     changed.append(f"score↑{p['minScoreThreshold']}")
                 if p["maxSlPct"] > 2.0:
                     p["maxSlPct"] = round(p["maxSlPct"] - 0.3, 1)
                     changed.append(f"sl↓{p['maxSlPct']}")
-            elif win_rate < 0.45:
-                if p["minScoreThreshold"] < 5.0:
-                    p["minScoreThreshold"] = round(p["minScoreThreshold"] + 0.1, 1)
-                    changed.append(f"score↑{p['minScoreThreshold']}")
-            elif win_rate >= 0.72:
+            elif win_rate >= 0.70:
                 if p["minScoreThreshold"] > 2.5:
-                    p["minScoreThreshold"] = round(p["minScoreThreshold"] - 0.15, 1)
+                    p["minScoreThreshold"] = round(p["minScoreThreshold"] - 0.1, 1)
                     changed.append(f"score↓{p['minScoreThreshold']}")
-
             if avg_loss > 3.5 and p["maxSlPct"] > 2.0:
                 p["maxSlPct"] = round(p["maxSlPct"] - 0.2, 1)
                 changed.append(f"sl↓{p['maxSlPct']}")
 
-            # ── KAYDET ─────────────────────────────────────────────────
-            p["wins"]        = len(wins)
-            p["losses"]      = len(losses)
+            p["wins"]       = len(wins)
+            p["losses"]     = len(losses)
             p["ind_weights"] = ind_w
-            p["ind_stats_v2"] = ind_stats   # ham istatistik sakla
+            p["ind_stats"]   = ind_stats
             p["version"]     = p.get("version", 1) + (1 if changed else 0)
+
             save_coin_params(symbol, p)
 
-            sym = symbol.replace("USDT","")
-            log = f"  Self-learn [{sym}]: WR={win_rate:.0%} AvgW={avg_win:+.1f}% AvgL={avg_loss:.1f}%"
-            if ind_report:
-                log += f" | {' | '.join(ind_report)}"
-            if changed:
-                print(log)
-                learn_reports.append({
-                    "symbol": sym,
-                    "win_rate": win_rate,
-                    "trades": len(recent),
-                    "ind_changes": ind_report,
-                    "param_changes": [c for c in changed if "score" in c or "sl" in c],
-                    "avg_win": avg_win,
-                    "avg_loss": avg_loss,
-                })
-            else:
-                print(f"  Self-learn [{sym}]: WR={win_rate:.0%} — stabil")
-
-        # ── TELEGRAM BİLDİRİMİ (değişen coinler varsa) ────────────────
-        if learn_reports:
-            lines = ["🧠 *Bot2 Self-Learn Raporu*", "━━━━━━━━━━━━━━━━━━"]
-            for rep in learn_reports:
-                lines.append(f"🪙 *{rep['symbol']}* — WR: `{rep['win_rate']:.0%}` ({rep['trades']} işlem)")
-                lines.append(f"  📈 Ort.Kar: `{rep['avg_win']:+.1f}%` | 📉 Ort.Zarar: `{rep['avg_loss']:.1f}%`")
-                if rep["ind_changes"]:
-                    lines.append(f"  🔧 İndikatör: `{'  '.join(rep['ind_changes'])}`")
-                if rep["param_changes"]:
-                    lines.append(f"  ⚙️ Parametre: `{'  '.join(rep['param_changes'])}`")
-                lines.append("")
-            lines.append("📡 *Bot 2 — MMT Altcoin*")
-            send_telegram("\n".join(lines))
+            sym_short = symbol.replace("USDT", "")
+            if ind_analysis:
+                print(f"  Self-learn [{sym_short}]: WR={win_rate:.0%} | İnd: {' | '.join(ind_analysis)}")
+            if changed and not ind_analysis:
+                print(f"  Self-learn [{sym_short}]: WR={win_rate:.0%} | {', '.join(changed)}")
+            if not changed:
+                print(f"  Self-learn [{sym_short}]: WR={win_rate:.0%} AvgLoss={avg_loss:.2f}% — stabil")
 
     except Exception as e:
         print(f"  Bot2 self-learn hata: {e}")
-        import traceback; traceback.print_exc()
 
 # ── TELEGRAM ──────────────────────────────────────────────────────────
 def send_telegram(msg):
@@ -618,17 +555,6 @@ def calc_atr_pct(candles, period=14):
     price = candles[-1]["close"]
     return (atr / price) * 100 if price > 0 else 0.5
 
-
-def smart_round(x, sig=8):
-    """Küçük değerli coinler (PEPE, SHIB vb.) için significant digit bazlı yuvarlama."""
-    if x == 0: return 0
-    try:
-        d = math.ceil(math.log10(abs(x)))
-        power = sig - d
-        return round(x, max(power, 0))
-    except:
-        return round(x, 10)
-
 def calc_tp_sl(price, is_long, atr, res, sup, coin_p=None):
     """coin_p verilirse o coin'in öğrenilmiş maxSlPct kullanılır."""
     max_sl_pct = coin_p["maxSlPct"] if coin_p else PARAMS["maxSlPct"]
@@ -652,7 +578,7 @@ def calc_tp_sl(price, is_long, atr, res, sup, coin_p=None):
     tp1 = (price + sl_dist * PARAMS["tp1Ratio"]) if is_long else (price - sl_dist * PARAMS["tp1Ratio"])
     tp2 = (price + sl_dist * PARAMS["tp2Ratio"]) if is_long else (price - sl_dist * PARAMS["tp2Ratio"])
 
-    return {"tp1": smart_round(tp1), "tp2": smart_round(tp2), "sl": smart_round(sl), "rr": PARAMS["tp2Ratio"], "sl_dist": sl_dist}
+    return {"tp1": round(tp1, 6), "tp2": round(tp2, 6), "sl": round(sl, 6), "rr": PARAMS["tp2Ratio"], "sl_dist": sl_dist}
 
 # ── SCAN ──────────────────────────────────────────────────────────────
 def run_scan():
@@ -686,8 +612,7 @@ def run_scan():
             if not c1h or not c4h:
                 continue
 
-            # Bu coin için öğrenilmiş parametreleri yükle (indikatör ağırlıkları dahil)
-            coin_p = get_coin_params(symbol)
+            # Bu coin için öğrenilmiş indikatör ağırlıklarını al
             ind_w = coin_p.get("ind_weights", COIN_PARAM_DEFAULTS["ind_weights"])
 
             s15, bd15 = score_tf_detailed(c15m, ind_w)
@@ -712,7 +637,8 @@ def run_scan():
                 }
             }
 
-            # ATR dinamik eşik için eşik değerini al
+            # Bu coin için öğrenilmiş parametreleri yükle
+            coin_p = get_coin_params(symbol)
             coin_score_thresh = coin_p["minScoreThreshold"]
 
             # ATR dinamik eşik — coin'in kendi öğrenilmiş eşiği üzerine uygulanır
@@ -733,8 +659,6 @@ def run_scan():
                 continue
 
             # OB filtresi: karşı duvar çok güçlüyse sinyali engelle
-            price_now = c1h[-1]["close"] if c1h else 0
-            ob_score, bid_wall, ask_wall, wall_note = get_order_book_signal(symbol, price_now)
             if (weighted > 0 and ob_score == -1) or (weighted < 0 and ob_score == 1):
                 print(f"  [{symbol}] OB karşı duvar — sinyal engellendi")
                 continue
@@ -748,7 +672,7 @@ def run_scan():
             if calc["rr"] < PARAMS["minRR"]:
                 continue
 
-            liq_tp = get_tp_from_liquidity(symbol, price_now, "LONG" if is_long else "SHORT") if price_now else None
+            liq_tp = get_tp_from_liquidity(symbol, price_now, "LONG" if is_long else "SHORT")
             results.append({
                 "symbol": symbol, "score": weighted,
                 "direction": "LONG" if is_long else "SHORT",
