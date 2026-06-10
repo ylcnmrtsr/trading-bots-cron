@@ -28,7 +28,7 @@ def refresh_token():
 
 # ── HEADERS & BASE_URL ─────────────────────────────────────────────────
 HEADERS  = lambda: {"api_key": BASE44_TOKEN, "Content-Type": "application/json"}
-BASE_URL = f"https://api.base44.com/api/apps/{APP_ID}/entities"
+BASE_URL = f"https://app.base44.com/api/apps/{APP_ID}/entities"
 
 # ── SELF-LEARNING PARAMETRELERİ (BotCache'den yüklenir) ───────────────
 DEFAULT_PARAMS = {
