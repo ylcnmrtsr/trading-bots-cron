@@ -483,15 +483,19 @@ def analyze(params):
         set_cache(cache_key, str(now_ts))
         price = get_price()
         tf_str = " | ".join([f"{k}:{v:+d}" for k, v in scores.items()])
+        # HAZIR OL mesajı için OB verisini al
+        _price_alert = get_price() or 3300
+        _ob_score, _bid_wall, _ask_wall, _wall_note = get_order_book_signal(SYMBOL, _price_alert)
+        _liq_tp = get_tp_from_liquidity(SYMBOL, _price_alert, alert_dir)
         msg = f"""⚠️ *XAU HAZIR OL — {alert_dir}*
 ━━━━━━━━━━━━━━━━━━
 📊 Skor: `{weighted_avg:+.2f}` (eşik: ±{dyn_threshold:.1f})
-💰 Fiyat: `{price:.2f}`
+💰 Fiyat: `{_price_alert:.2f}`
 📐 TF: {tf_str}
 🔔 Sinyal eşiğine yakın, izle!
 ━━━━━━━━━━━━━━━━━━
-📚 OB: Alış `{bid_wall:.1f}` / Satış `{ask_wall:.1f}` | {wall_note}
-""" + (f"🎯 Liq TP: `{liq_tp:.2f}`\n" if liq_tp else "") + """━━━━━━━━━━━━━━━━━━
+📚 OB: Alış `{_bid_wall:.1f}` / Satış `{_ask_wall:.1f}` | {_wall_note}
+""" + (f"🎯 Liq TP: `{_liq_tp:.2f}`\n" if _liq_tp else "") + """━━━━━━━━━━━━━━━━━━
 📡 *Bot 3 — XAU Scalper*"""
         send_telegram(msg)
         print(f"  HAZIR OL: {alert_dir} skor:{weighted_avg:.2f}")
