@@ -855,20 +855,59 @@ def run_watchdog():
         elif (is_long and price <= sl) or (not is_long and price >= sl):
             pct = abs(sl - entry) / entry * 100
             lev = pct * PARAMS["leverage"]
-            update_trade(trade_id, {
-                "status": "SL_HIT",
-                "close_time": datetime.now(timezone.utc).isoformat(),
-                "result_pct": round(-pct, 2)
-            })
-            send_telegram(
-                f"❌ *SL HIT — {sym}*\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"{'📈 LONG' if is_long else '📉 SHORT'} stoploss!\n"
-                f"💸 Basit: -{pct:.2f}% | 🔗 @{PARAMS['leverage']}x: -{lev:.2f}%\n"
-                f"⛔ 48 saat blacklist'e eklendi\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            )
-            print(f"❌ SL HIT: {sym}")
+            # SL kâr bölgesinde mi? (Long: sl>entry | Short: sl<entry)
+            sl_in_profit = (is_long and sl > entry) or (not is_long and sl < entry)
+            # Breakeven mi? (sl == entry)
+            sl_at_be = abs(sl - entry) < 0.0001 * entry
+
+            if sl_in_profit:
+                # Kârlı kapanış
+                update_trade(trade_id, {
+                    "status": "TP_HIT",
+                    "close_time": datetime.now(timezone.utc).isoformat(),
+                    "result_pct": round(pct, 2)
+                })
+                add_to_whitelist(symbol)
+                send_telegram(
+                    f"✅ *KÂR İLE KAPANDI — {sym}*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"{'📈 LONG' if is_long else '📉 SHORT'} SL kâr bölgesinde tetiklendi\n"
+                    f"💰 Giriş: `{entry:.6g}` → Kapanış: `{sl:.6g}`\n"
+                    f"📊 +{pct:.2f}% | 🔗 @{PARAMS['leverage']}x: +{lev:.2f}%\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                )
+                print(f"✅ KÂR SL: {sym} +{pct:.2f}%")
+            elif sl_at_be:
+                # Breakeven kapanış
+                update_trade(trade_id, {
+                    "status": "SL_HIT",
+                    "close_time": datetime.now(timezone.utc).isoformat(),
+                    "result_pct": 0.0
+                })
+                send_telegram(
+                    f"⚖️ *BREAKEVEN — {sym}*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"{'📈 LONG' if is_long else '📉 SHORT'} başa baş kapandı\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                )
+                print(f"⚖️ BREAKEVEN: {sym}")
+            else:
+                # Gerçek zarar
+                update_trade(trade_id, {
+                    "status": "SL_HIT",
+                    "close_time": datetime.now(timezone.utc).isoformat(),
+                    "result_pct": round(-pct, 2)
+                })
+                add_to_blacklist(symbol)
+                send_telegram(
+                    f"❌ *SL HIT — {sym}*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"{'📈 LONG' if is_long else '📉 SHORT'} stoploss!\n"
+                    f"💸 -{pct:.2f}% | 🔗 @{PARAMS['leverage']}x: -{lev:.2f}%\n"
+                    f"⛔ 48 saat blacklist'e eklendi\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                )
+                print(f"❌ SL HIT: {sym} -{pct:.2f}%")
             continue
 
         # +1R SL Yönetimi
