@@ -16,7 +16,7 @@ CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "2055780815")
 BITGET_BASE = "https://api.bitget.com/api/v2"
 
 BASE44_CACHE_API = "https://app.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/BotCache"
-BASE44_TOKEN = os.environ.get("BASE44_API_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJjbGllbnRfaWQiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJhcHBfaWQiOiI2YTFkOTczNTY4YWY5Yjk4NGUwZjFjYzgiLCJhdWQiOiJiYXNlNDRfYXBpIiwic2NvcGUiOiJhcHAuYWNjZXNzIiwiZXhwIjoxNzgxMTA2NjY1LCJpYXQiOjE3ODExMDMwNjV9.zG37hfTlwncioa6ZbK56gjYmnllMM3BAci_AqHW8EvU")
+BASE44_TOKEN = os.environ.get("BASE44_API_KEY", "")
 CACHE_KEY = "btc_signal_cache"
 
 SIGNAL_THRESHOLD = 3.0
@@ -24,7 +24,7 @@ READY_THRESHOLD = 1.8
 
 # ── CACHE (Base44 DB) ─────────────────────────────────────────────────
 def b44_headers():
-    return {"Authorization": f"Bearer {BASE44_TOKEN}", "Content-Type": "application/json"}
+    return {"api_key": BASE44_TOKEN, "Content-Type": "application/json"}
 
 def load_cache():
     try:
@@ -311,8 +311,6 @@ def main():
     # ── ORDER BOOK filtresi ──
     ob_score, bid_wall, ask_wall, wall_note = get_order_book_signal("BTCUSDT", price)
     print(f"  OB: bid={bid_wall} ask={ask_wall} skor={ob_score} | {wall_note}")
-    direction_for_liq = "LONG" if weighted >= 0 else "SHORT"
-    liq_tp = get_tp_from_liquidity("BTCUSDT", price, direction_for_liq)
 
     is_long_signal  = weighted >= sig_threshold and vol_ok_1h and ob_score >= 0
     is_short_signal = weighted <= -sig_threshold and vol_ok_1h and ob_score <= 0
