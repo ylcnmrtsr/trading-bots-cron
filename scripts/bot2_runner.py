@@ -28,7 +28,7 @@ PARAMS = {
     "maxOpenTrades": 3,
     "tp1Ratio": 1.8,
     "tp2Ratio": 5.0,
-    "avoidCoins": ["SKYAIUSDT"],
+    "avoidCoins": ["SKYAIUSDT", "XAUUSDT"],  # XAUUSDT sadece Bot3 yönetir
     "minScoreThreshold": 3.5,
     "leverage": 5,
 }
