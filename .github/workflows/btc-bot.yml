@@ -21,7 +21,7 @@ jobs:
           cache: "pip"
 
       - name: Install dependencies
-        run: pip install requests --quiet
+        run: pip install -r requirements.txt --quiet
 
       - name: Run BTC Signal Bot
         timeout-minutes: 3
