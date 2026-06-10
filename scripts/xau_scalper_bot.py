@@ -14,30 +14,20 @@ from datetime import datetime, timezone
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN_7", "")
 CHAT_ID        = "2055780815"
-BASE44_TOKEN   = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJjbGllbnRfaWQiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJhcHBfaWQiOiI2YTFkOTczNTY4YWY5Yjk4NGUwZjFjYzgiLCJhdWQiOiJiYXNlNDRfYXBpIiwic2NvcGUiOiJhcHAuYWNjZXNzIiwiZXhwIjoxNzgxMTA4MzM2LCJpYXQiOjE3ODExMDQ3MzZ9.huH3BNmX2XGYW1vlOzfk81-B2ztMkdLGN6qjG8hG1-s"
+BASE44_TOKEN   = os.environ.get("BASE44_API_KEY", "")
 APP_ID         = "6a1d973568af9b984e0f1cc8"
 SYMBOL         = "XAUUSDT"
 BITGET_BASE    = "https://api.bitget.com"
 
 def refresh_token():
     global BASE44_TOKEN
-    try:
-        import subprocess
-        result = subprocess.run(
-            ["python3", "-c",
-             "import os,requests; r=requests.post('https://api.base44.com/api/auth/service-token',"
-             "headers={'Authorization':'Bearer '+os.environ.get('BASE44_SERVICE_TOKEN','')},timeout=8);"
-             "print(r.json().get('token','')) if r.status_code==200 else print('')"],
-            capture_output=True, text=True, timeout=15
-        )
-        new_tok = result.stdout.strip()
-        if new_tok and len(new_tok) > 20:
-            BASE44_TOKEN = new_tok
-    except:
-        pass
+    # BASE44_API_KEY env var'dan taze token al
+    new_tok = os.environ.get("BASE44_API_KEY", "")
+    if new_tok and len(new_tok) > 20:
+        BASE44_TOKEN = new_tok
 
 # ── HEADERS & BASE_URL ─────────────────────────────────────────────────
-HEADERS  = lambda: {"Authorization": f"Bearer {BASE44_TOKEN}", "Content-Type": "application/json"}
+HEADERS  = lambda: {"api_key": BASE44_TOKEN, "Content-Type": "application/json"}
 BASE_URL = f"https://api.base44.com/api/apps/{APP_ID}/entities"
 
 # ── SELF-LEARNING PARAMETRELERİ (BotCache'den yüklenir) ───────────────
@@ -483,19 +473,16 @@ def analyze(params):
         set_cache(cache_key, str(now_ts))
         price = get_price()
         tf_str = " | ".join([f"{k}:{v:+d}" for k, v in scores.items()])
-        # HAZIR OL mesajı için OB verisini al
-        _price_alert = get_price() or 3300
-        _ob_score, _bid_wall, _ask_wall, _wall_note = get_order_book_signal(SYMBOL, _price_alert)
-        _liq_tp = get_tp_from_liquidity(SYMBOL, _price_alert, alert_dir)
         msg = f"""⚠️ *XAU HAZIR OL — {alert_dir}*
 ━━━━━━━━━━━━━━━━━━
 📊 Skor: `{weighted_avg:+.2f}` (eşik: ±{dyn_threshold:.1f})
-💰 Fiyat: `{_price_alert:.2f}`
+💰 Fiyat: `{price:.2f}`
 📐 TF: {tf_str}
 🔔 Sinyal eşiğine yakın, izle!
 ━━━━━━━━━━━━━━━━━━
-📚 OB: Alış `{_bid_wall:.1f}` / Satış `{_ask_wall:.1f}` | {_wall_note}
-""" + (f"🎯 Liq TP: `{_liq_tp:.2f}`\n" if _liq_tp else "") + """━━━━━━━━━━━━━━━━━━
+📚 OB: Alış `{bid_wall:.1f}` / Satış `{ask_wall:.1f}` | {wall_note}
+🎯 Liq TP: `{liq_tp:.2f}`
+━━━━━━━━━━━━━━━━━━
 📡 *Bot 3 — XAU Scalper*"""
         send_telegram(msg)
         print(f"  HAZIR OL: {alert_dir} skor:{weighted_avg:.2f}")
@@ -652,10 +639,9 @@ def self_learn(params):
 
 # ── BASE44 CRUD ────────────────────────────────────────────────────────
 def get_open_trade():
-    """Sadece XAUUSDT işlemini izle — Bot2 işlemlerine bakma"""
     try:
         r = requests.get(f"{BASE_URL}/ActiveTrade", headers=HEADERS(),
-                         params={"status": "OPEN"}, timeout=10)
+                         params={"status": "OPEN", "symbol": SYMBOL}, timeout=10)
         if r.status_code == 200:
             for t in r.json():
                 if t.get("symbol") == SYMBOL and t.get("status") == "OPEN":
@@ -665,12 +651,6 @@ def get_open_trade():
     return None
 
 def create_trade(signal):
-    # Çift işlem koruması — DB'de OPEN XAUUSDT işlemi varsa açma
-    existing = get_open_trade()
-    if existing:
-        print(f"  Bot3: XAUUSDT zaten açık (ID:{existing['id']}) — yeni işlem açılmıyor")
-        return None
-
     payload = {
         "symbol":       SYMBOL,
         "direction":    signal["direction"],
@@ -691,9 +671,7 @@ def create_trade(signal):
         r = requests.post(f"{BASE_URL}/ActiveTrade", headers=HEADERS(),
                           json=payload, timeout=10)
         if r.status_code in (200, 201):
-            trade_id = r.json().get("id")
-            print(f"  Bot3: işlem açıldı — ID:{trade_id}")
-            return trade_id
+            return r.json().get("id")
     except Exception as e:
         print(f"DB CREATE error: {e}")
     return None
@@ -703,10 +681,6 @@ def close_trade(trade_id, result, result_pct):
         requests.patch(f"{BASE_URL}/ActiveTrade/{trade_id}", headers=HEADERS(),
                        json={"status": result, "close_time": datetime.now(timezone.utc).isoformat(),
                              "result_pct": round(result_pct, 2)}, timeout=10)
-        # Lock kaldır — yeni işlem açılabilir
-        set_cache("bot3_trade_lock", {"value": "UNLOCKED", "trade_id": trade_id,
-                                      "closed_at": datetime.now(timezone.utc).isoformat()})
-        print(f"  Bot3: trade lock CLEARED — {result} {result_pct:+.2f}%")
     except Exception as e:
         print(f"DB PATCH error: {e}")
 
@@ -724,187 +698,83 @@ def send_telegram(msg):
 
 # ── WATCHDOG ──────────────────────────────────────────────────────────
 def watch_trade(trade):
-    """
-    Gelişmiş işlem takibi:
-    - Trailing Stop Loss (kâr arttıkça SL otomatik yükselir)
-    - Dinamik TP uzatma (momentum varsa TP ileri taşınır)
-    - Breakeven koruması (%30 ilerlemede)
-    - Tüm hareketlerde anlık Telegram bildirimi
-    """
     trade_id  = trade["id"]
     direction = trade["direction"]
     entry     = float(trade["entry_price"])
     sl        = float(trade["sl"])
     tp        = float(trade["tp"])
     orig_sl   = float(trade.get("original_sl", sl))
-    is_long   = direction == "LONG"
 
     price = get_price()
     if not price:
         return
 
-    orig_sl_dist = abs(entry - orig_sl)   # orijinal risk mesafesi (ATR bazlı)
-    sl_dist_now  = abs(entry - orig_sl)   # trailing hesabında kullanılır
-
-    # Anlık PnL
-    raw_pct = (price - entry) / entry * 100 if is_long else (entry - price) / entry * 100
-    lev_pct = raw_pct * LEVERAGE
-
-    # TP'ye ilerleme (0.0 → 1.0+)
-    tp_dist  = abs(tp - entry)
-    progress = abs(price - entry) / tp_dist if tp_dist > 0 else 0
-
-    # ── 1. TP HIT ──────────────────────────────────────────────────────
-    tp_hit = (is_long and price >= tp) or (not is_long and price <= tp)
-    sl_hit = (is_long and price <= sl) or (not is_long and price >= sl)
+    sl_pct  = abs(entry - orig_sl) / entry * 100
+    tp_pct  = abs(entry - tp) / entry * 100
+    rr      = trade.get("rr", 3.0)
+    tp_hit  = (direction == "LONG" and price >= tp) or (direction == "SHORT" and price <= tp)
+    sl_hit  = (direction == "LONG" and price <= sl) or (direction == "SHORT" and price >= sl)
 
     if tp_hit:
-        if raw_pct > 0.05:
+        result_pct = (price - entry) / entry * 100 if direction == "LONG" else (entry - price) / entry * 100
+        if result_pct > 0.05:
             label, emoji = "✅ KAR", "🟢"
-        elif raw_pct >= -0.05:
+        elif result_pct >= -0.05:
             label, emoji = "〽️ BREAKEVEN", "🟡"
         else:
             label, emoji = "❌ ZARAR", "🔴"
-        close_trade(trade_id, "TP_HIT", raw_pct)
-        send_telegram(f"""🎯 *XAU TP HIT* {emoji}
+        close_trade(trade_id, "TP_HIT", result_pct)
+        send_telegram(f"""🎯 *XAU TP ULAŞTI* {emoji}
 ━━━━━━━━━━━━━━━━━━
 {label}
-📍 Çıkış: `{price:.2f}` | 💰 Giriş: `{entry:.2f}`
-📊 Ham: `{raw_pct:+.2f}%` | 🔥 {LEVERAGE}x: `{lev_pct:+.1f}%`
+📍 Fiyat: `{price:.2f}` | 💰 Giriş: `{entry:.2f}`
+🎯 TP: `{tp:.2f}` (+{tp_pct:.2f}%) | 🔒 SL: `{orig_sl:.2f}` (-{sl_pct:.2f}%)
+📊 Sonuç: `{result_pct:+.2f}%` | ⚖️ RR: 1:{rr}
+━━━━━━━━━━━━━━━━━━
+📚 OB: Alış `{bid_wall:.1f}` / Satış `{ask_wall:.1f}` | {wall_note}
+🎯 Liq TP: `{liq_tp:.2f}`
 ━━━━━━━━━━━━━━━━━━
 📡 *Bot 3 — XAU Scalper*""")
-        print(f"TP HIT: {direction} raw:{raw_pct:+.2f}% | {LEVERAGE}x:{lev_pct:+.1f}%")
-        return
+        print(f"TP HIT: {direction} {result_pct:+.2f}%")
 
-    # ── 2. SL HIT ──────────────────────────────────────────────────────
-    if sl_hit:
-        if abs(raw_pct) < 0.05:
+    elif sl_hit:
+        result_pct = (price - entry) / entry * 100 if direction == "LONG" else (entry - price) / entry * 100
+        if abs(result_pct) < 0.05:
             label, emoji, res = "〽️ BREAKEVEN", "🟡", "BREAKEVEN"
-        elif raw_pct > 0:
-            label, emoji, res = "✅ KÂR'DAN ÇIKIŞ", "🟢", "TP_HIT"
         else:
             label, emoji, res = "❌ ZARAR", "🔴", "SL_HIT"
-        close_trade(trade_id, res, raw_pct)
-        send_telegram(f"""🛑 *XAU SL HIT* {emoji}
+        close_trade(trade_id, res, result_pct)
+        send_telegram(f"""🛑 *XAU SL ULAŞTI* {emoji}
 ━━━━━━━━━━━━━━━━━━
 {label}
-📍 Çıkış: `{price:.2f}` | 💰 Giriş: `{entry:.2f}`
-📊 Ham: `{raw_pct:+.2f}%` | 🔥 {LEVERAGE}x: `{lev_pct:+.1f}%`
+📍 Fiyat: `{price:.2f}` | 💰 Giriş: `{entry:.2f}`
+🎯 TP: `{tp:.2f}` (+{tp_pct:.2f}%) | 🔒 SL: `{sl:.2f}` (-{sl_pct:.2f}%)
+📊 Sonuç: `{result_pct:+.2f}%` | ⚖️ RR: 1:{rr}
+━━━━━━━━━━━━━━━━━━
+📚 OB: Alış `{bid_wall:.1f}` / Satış `{ask_wall:.1f}` | {wall_note}
+🎯 Liq TP: `{liq_tp:.2f}`
 ━━━━━━━━━━━━━━━━━━
 📡 *Bot 3 — XAU Scalper*""")
-        print(f"SL HIT: {direction} raw:{raw_pct:+.2f}% | {LEVERAGE}x:{lev_pct:+.1f}%")
-        return
+        print(f"SL HIT: {direction} {result_pct:+.2f}%")
 
-    # ── 3. DEVAM EDEN İŞLEM — SL/TP YÖNETİMİ ─────────────────────────
-    updates = {}
-    notifications = []
+    else:
+        pnl = (price - entry) / entry * 100 if direction == "LONG" else (entry - price) / entry * 100
+        print(f"  İşlem devam: {direction} | Fiyat:{price:.2f} | PnL:{pnl:+.2f}%")
 
-    # ── 3a. BREAKEVEN: %30 ilerlemede SL → entry ──────────────────────
-    if not trade.get("sl_moved_breakeven") and progress >= 0.30:
-        # SL'yi entry'ye çok yakın koy (spread payı: 0.02%)
-        new_sl = round(entry * 1.0002, 2) if is_long else round(entry * 0.9998, 2)
-        if (is_long and new_sl > sl) or (not is_long and new_sl < sl):
-            updates["sl"] = new_sl
-            updates["sl_moved_breakeven"] = True
-            sl = new_sl
-            be_pct = (new_sl - entry) / entry * 100 if is_long else (entry - new_sl) / entry * 100
-            notifications.append(
-                f"🔒 *XAU SL → Breakeven* 🟡\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"📍 Yeni SL: `{new_sl:.2f}` (Ham: `{be_pct:+.3f}%`)\n"
-                f"📈 İlerleme: `%{progress*100:.0f}` | PnL: `{raw_pct:+.2f}%` ({LEVERAGE}x: `{lev_pct:+.1f}%`)\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"📡 *Bot 3 — XAU Scalper*"
-            )
-            print(f"  SL BREAKEVEN: {new_sl:.2f} | ilerleme:{progress*100:.0f}%")
-
-    # ── 3b. TRAILING SL: %50+ ilerlemede her %0.3 kârda SL sürükle ───
-    elif trade.get("sl_moved_breakeven") and raw_pct > 0:
-        # Trailing adımı: orijinal SL mesafesinin %25'i kadar
-        trail_step = orig_sl_dist * 0.25
-        trail_step = max(trail_step, price * 0.001)   # min %0.1
-
-        if is_long:
-            ideal_trailing_sl = round(price - trail_step, 2)
-            if ideal_trailing_sl > sl + (price * 0.001):   # en az %0.1 iyileşme varsa taşı
-                updates["sl"] = ideal_trailing_sl
-                sl = ideal_trailing_sl
-                trail_be = (ideal_trailing_sl - entry) / entry * 100
-                notifications.append(
-                    f"📈 *XAU Trailing SL ↑* 🟢\n"
-                    f"━━━━━━━━━━━━━━━━━━\n"
-                    f"🔒 Yeni SL: `{ideal_trailing_sl:.2f}` (Kâr garantisi: `{trail_be:+.2f}%` / `{trail_be*LEVERAGE:+.1f}%` {LEVERAGE}x)\n"
-                    f"📍 Fiyat: `{price:.2f}` | PnL: `{raw_pct:+.2f}%` ({lev_pct:+.1f}% {LEVERAGE}x)\n"
-                    f"━━━━━━━━━━━━━━━━━━\n"
-                    f"📡 *Bot 3 — XAU Scalper*"
-                )
-                print(f"  TRAILING SL: {ideal_trailing_sl:.2f} (kâr garantisi: {trail_be:+.2f}%)")
-        else:  # SHORT
-            ideal_trailing_sl = round(price + trail_step, 2)
-            if ideal_trailing_sl < sl - (price * 0.001):
-                updates["sl"] = ideal_trailing_sl
-                sl = ideal_trailing_sl
-                trail_be = (entry - ideal_trailing_sl) / entry * 100
-                notifications.append(
-                    f"📉 *XAU Trailing SL ↓* 🟢\n"
-                    f"━━━━━━━━━━━━━━━━━━\n"
-                    f"🔒 Yeni SL: `{ideal_trailing_sl:.2f}` (Kâr garantisi: `{trail_be:+.2f}%` / `{trail_be*LEVERAGE:+.1f}%` {LEVERAGE}x)\n"
-                    f"📍 Fiyat: `{price:.2f}` | PnL: `{raw_pct:+.2f}%` ({lev_pct:+.1f}% {LEVERAGE}x)\n"
-                    f"━━━━━━━━━━━━━━━━━━\n"
-                    f"📡 *Bot 3 — XAU Scalper*"
-                )
-                print(f"  TRAILING SL: {ideal_trailing_sl:.2f} (kâr garantisi: {trail_be:+.2f}%)")
-
-    # ── 3c. TP UZATMA: TP'ye yaklaşıldığında momentum kontrolü ────────
-    if not trade.get("tp_extended") and progress >= 0.80:
-        # 5m mum verisi al → momentum var mı?
-        candles_5m = get_candles("5m", 20)
-        if candles_5m and len(candles_5m) >= 5:
-            # Son 3 mumun yönü + son hacim kontrolü
-            recent = candles_5m[-3:]
-            bullish = sum(1 for c in recent if c["close"] > c["open"])
-            bearish = sum(1 for c in recent if c["close"] < c["open"])
-            momentum_ok = (is_long and bullish >= 2) or (not is_long and bearish >= 2)
-
-            if momentum_ok:
-                # ATR hesapla → TP'yi 1 ATR daha ileri taşı
-                atr = calc_atr(candles_5m, 14)
-                if atr:
-                    old_tp = tp
-                    new_tp = round(tp + atr * 1.5, 2) if is_long else round(tp - atr * 1.5, 2)
-                    tp_ext_pct = abs(new_tp - entry) / entry * 100
-                    updates["tp"] = new_tp
-                    updates["tp_extended"] = True
-                    tp = new_tp
-                    notifications.append(
-                        f"🚀 *XAU TP UZATILDI* ⬆️\n"
-                        f"━━━━━━━━━━━━━━━━━━\n"
-                        f"🎯 Eski TP: `{old_tp:.2f}` → Yeni TP: `{new_tp:.2f}`\n"
-                        f"📊 Yeni TP mesafesi: `+{tp_ext_pct:.2f}%` / `+{tp_ext_pct*LEVERAGE:.1f}%` {LEVERAGE}x\n"
-                        f"💪 Momentum: {'Yükseliş' if is_long else 'Düşüş'} güçlü ({bullish if is_long else bearish}/3 mum)\n"
-                        f"📡 *Bot 3 — XAU Scalper*"
-                    )
-                    print(f"  TP UZATILDI: {old_tp:.2f} → {new_tp:.2f} | momentum ok")
-            else:
-                # Momentum yok — TP uzatma, mevcut TP'yi koru
-                print(f"  TP uzatma atlandı — momentum yok ({'AL' if is_long else 'SAT'}: {bullish}/{bearish}/3 mum)")
-
-    # ── 3d. DB güncelle + bildirimleri gönder ──────────────────────────
-    if updates:
-        try:
-            requests.patch(f"{BASE_URL}/ActiveTrade/{trade_id}",
-                           headers=HEADERS(), json=updates, timeout=10)
-        except Exception as e:
-            print(f"  DB güncelleme hatası: {e}")
-
-    for msg in notifications:
-        send_telegram(msg)
-
-    # ── 3e. Durum logu ─────────────────────────────────────────────────
-    sl_safe_pct = (sl - entry) / entry * 100 if is_long else (entry - sl) / entry * 100
-    tp_pct_now  = abs(tp - entry) / entry * 100
-    print(f"  Devam [{direction}] | Fiyat:{price:.2f} | PnL:{raw_pct:+.2f}% ({lev_pct:+.1f}%{LEVERAGE}x) | SL:{sl:.2f}({sl_safe_pct:+.2f}%) | TP:{tp:.2f}({tp_pct_now:.2f}%) | İlerleme:{progress*100:.0f}%")
-
+        # SL breakeven'a taşı (TP'nin %40'ına ulaşıldığında)
+        if not trade.get("sl_moved_breakeven"):
+            progress = abs(price - entry) / abs(tp - entry)
+            if progress >= 0.4:
+                new_sl = entry * 1.0002 if direction == "LONG" else entry * 0.9998
+                try:
+                    requests.patch(f"{BASE_URL}/ActiveTrade/{trade_id}",
+                                   headers=HEADERS(),
+                                   json={"sl": round(new_sl, 4), "sl_moved_breakeven": True},
+                                   timeout=10)
+                    print(f"  SL breakeven'a taşındı: {new_sl:.4f}")
+                    send_telegram(f"🔒 *XAU SL Breakeven'a Taşındı*\n📍 Yeni SL: `{new_sl:.2f}` | İlerleme: %{progress*100:.0f}\n📡 *Bot 3*")
+                except:
+                    pass
 
 # ── ANA DÖNGÜ ─────────────────────────────────────────────────────────
 def main():
