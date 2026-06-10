@@ -520,15 +520,15 @@ def analyze(params):
     # Pattern yoksa (0) sinyal yine de gidebilir ama log'a yaz
     # Pattern 2+ ise skoru artır (bonus)
 
-    # ── ATR bazlı SL/TP ──
-    atr = calc_atr(candles_5m, 14)
+    # ── ATR bazlı SL/TP — 15m ATR kullan (5m çok dar, noise'a takılır) ──
+    atr = calc_atr(candles_15m, 14)
     price = get_price()
     if not atr or not price:
         return None
 
     sl_mult     = params.get("sl_atr_mult", 1.0)
-    sl_distance = min(atr * sl_mult, price * 0.005)
-    sl_distance = max(sl_distance, price * 0.001)
+    sl_distance = min(atr * sl_mult, price * 0.008)
+    sl_distance = max(sl_distance, price * 0.002)
     tp_distance = sl_distance * 3.2
 
     if direction == "LONG":
