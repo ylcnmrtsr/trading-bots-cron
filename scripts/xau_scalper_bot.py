@@ -639,16 +639,27 @@ def self_learn(params):
 
 # ── BASE44 CRUD ────────────────────────────────────────────────────────
 def get_open_trade():
+    """XAUUSDT'de açık işlem varsa döndür (kendi işlemini izler)"""
     try:
         r = requests.get(f"{BASE_URL}/ActiveTrade", headers=HEADERS(),
-                         params={"status": "OPEN", "symbol": SYMBOL}, timeout=10)
+                         params={"status": "OPEN"}, timeout=10)
         if r.status_code == 200:
-            for t in r.json():
-                if t.get("symbol") == SYMBOL and t.get("status") == "OPEN":
-                    return t
+            xau = [t for t in r.json() if t.get("symbol") == SYMBOL and t.get("status") == "OPEN"]
+            return xau[0] if xau else None
     except Exception as e:
         print(f"DB GET error: {e}")
     return None
+
+def count_open_trades():
+    """Bot2 dahil toplam açık işlem sayısını döndür"""
+    try:
+        r = requests.get(f"{BASE_URL}/ActiveTrade", headers=HEADERS(),
+                         params={"status": "OPEN"}, timeout=10)
+        if r.status_code == 200:
+            return len([t for t in r.json() if t.get("status") == "OPEN"])
+    except Exception as e:
+        print(f"DB count error: {e}")
+    return 0
 
 def create_trade(signal):
     payload = {
