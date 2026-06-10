@@ -1,26 +1,19 @@
-name: Bot 3 — XAU Scalper
-
+name: Bot3 XAU Scalper
 on:
   schedule:
-    - cron: '*/1 * * * *'
+    - cron: "* * * * *"
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Bot mode (both/scan/watch/test)'
-        required: false
-        default: 'both'
-
-concurrency:
-  group: bot3-xau
-  cancel-in-progress: true
+        description: "Mode: scan | watch | both | test"
+        default: "both"
 
 jobs:
-  xau-scalper:
+  run:
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-    timeout-minutes: 3
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,14 +21,16 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
+          cache: "pip"
 
-      - name: Install deps
-        run: pip install requests
+      - name: Install dependencies
+        run: pip install requests --quiet
 
-      - name: Run XAU Scalper Bot
+      - name: Run Bot3 XAU Scalper
+        timeout-minutes: 2
         env:
-          TELEGRAM_BOT_TOKEN_7: ${{ secrets.TELEGRAM_BOT_TOKEN_7 }}
-          BASE44_SERVICE_TOKEN: ${{ secrets.BASE44_SERVICE_TOKEN }}
+          TELEGRAM_BOT_TOKEN_3: ${{ secrets.TELEGRAM_BOT_TOKEN_3 }}
+          BASE44_API_KEY: ${{ secrets.BASE44_API_KEY }}
           BOT3_MODE: ${{ github.event.inputs.mode || 'both' }}
         run: python scripts/xau_scalper_bot.py
