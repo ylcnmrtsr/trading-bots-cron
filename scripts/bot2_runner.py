@@ -618,6 +618,17 @@ def calc_atr_pct(candles, period=14):
     price = candles[-1]["close"]
     return (atr / price) * 100 if price > 0 else 0.5
 
+
+def smart_round(x, sig=8):
+    """Küçük değerli coinler (PEPE, SHIB vb.) için significant digit bazlı yuvarlama."""
+    if x == 0: return 0
+    try:
+        d = math.ceil(math.log10(abs(x)))
+        power = sig - d
+        return round(x, max(power, 0))
+    except:
+        return round(x, 10)
+
 def calc_tp_sl(price, is_long, atr, res, sup, coin_p=None):
     """coin_p verilirse o coin'in öğrenilmiş maxSlPct kullanılır."""
     max_sl_pct = coin_p["maxSlPct"] if coin_p else PARAMS["maxSlPct"]
@@ -641,7 +652,7 @@ def calc_tp_sl(price, is_long, atr, res, sup, coin_p=None):
     tp1 = (price + sl_dist * PARAMS["tp1Ratio"]) if is_long else (price - sl_dist * PARAMS["tp1Ratio"])
     tp2 = (price + sl_dist * PARAMS["tp2Ratio"]) if is_long else (price - sl_dist * PARAMS["tp2Ratio"])
 
-    return {"tp1": round(tp1, 6), "tp2": round(tp2, 6), "sl": round(sl, 6), "rr": PARAMS["tp2Ratio"], "sl_dist": sl_dist}
+    return {"tp1": smart_round(tp1), "tp2": smart_round(tp2), "sl": smart_round(sl), "rr": PARAMS["tp2Ratio"], "sl_dist": sl_dist}
 
 # ── SCAN ──────────────────────────────────────────────────────────────
 def run_scan():
