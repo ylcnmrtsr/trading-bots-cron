@@ -85,7 +85,7 @@ def get_blacklisted():
 
 
 # ── SELF-LEARNING ─────────────────────────────────────────────────────
-BOTCACHE_API = "https://api.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/BotCache"
+BOTCACHE_API = "https://app.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/BotCache"
 
 def get_cache(key):
     try:
