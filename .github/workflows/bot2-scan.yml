@@ -21,7 +21,7 @@ jobs:
           cache: "pip"
 
       - name: Install dependencies
-        run: pip install requests --quiet
+        run: pip install -r requirements.txt --quiet
 
       - name: Run Bot2 Scanner
         timeout-minutes: 12
