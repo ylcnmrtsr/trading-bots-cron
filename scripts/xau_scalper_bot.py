@@ -661,10 +661,10 @@ def get_open_trade():
     return None
 
 def create_trade(signal):
-    # Çift işlem koruması — lock aktifse yeni işlem açma
-    lock = get_cache("bot3_trade_lock")
-    if lock and lock.get("value") == "LOCKED":
-        print("  Bot3: trade lock aktif — yeni işlem açılmıyor")
+    # Çift işlem koruması — DB'de OPEN XAUUSDT işlemi varsa açma
+    existing = get_open_trade()
+    if existing:
+        print(f"  Bot3: XAUUSDT zaten açık (ID:{existing['id']}) — yeni işlem açılmıyor")
         return None
 
     payload = {
@@ -688,10 +688,7 @@ def create_trade(signal):
                           json=payload, timeout=10)
         if r.status_code in (200, 201):
             trade_id = r.json().get("id")
-            # Lock koy — SL/TP kapanana kadar yeni işlem açılmasın
-            set_cache("bot3_trade_lock", {"value": "LOCKED", "trade_id": trade_id,
-                                          "opened_at": datetime.now(timezone.utc).isoformat()})
-            print(f"  Bot3: trade lock SET — ID:{trade_id}")
+            print(f"  Bot3: işlem açıldı — ID:{trade_id}")
             return trade_id
     except Exception as e:
         print(f"DB CREATE error: {e}")
@@ -741,10 +738,12 @@ def watch_trade(trade):
     sl_hit  = (direction == "LONG" and price <= sl) or (direction == "SHORT" and price >= sl)
 
     if tp_hit:
-        result_pct = (price - entry) / entry * 100 if direction == "LONG" else (entry - price) / entry * 100
-        if result_pct > 0.05:
+        raw_pct = (price - entry) / entry * 100 if direction == "LONG" else (entry - price) / entry * 100
+        result_pct = raw_pct  # DB'ye ham yüzde kaydedilir
+        lev_pct = raw_pct * LEVERAGE  # Telegram bildirimi için kaldıraçlı
+        if raw_pct > 0.05:
             label, emoji = "✅ KAR", "🟢"
-        elif result_pct >= -0.05:
+        elif raw_pct >= -0.05:
             label, emoji = "〽️ BREAKEVEN", "🟡"
         else:
             label, emoji = "❌ ZARAR", "🔴"
@@ -752,16 +751,18 @@ def watch_trade(trade):
         send_telegram(f"""🎯 *XAU TP ULAŞTI* {emoji}
 ━━━━━━━━━━━━━━━━━━
 {label}
-📍 Fiyat: `{price:.2f}` | 💰 Giriş: `{entry:.2f}`
+📍 Çıkış: `{price:.2f}` | 💰 Giriş: `{entry:.2f}`
 🎯 TP: `{tp:.2f}` (+{tp_pct:.2f}%) | 🔒 SL: `{orig_sl:.2f}` (-{sl_pct:.2f}%)
-📊 Sonuç: `{result_pct:+.2f}%` | ⚖️ RR: 1:{rr}
+📊 Ham: `{raw_pct:+.2f}%` | 🔥 {LEVERAGE}x: `{lev_pct:+.1f}%` | ⚖️ RR: 1:{rr}
 ━━━━━━━━━━━━━━━━━━
 📡 *Bot 3 — XAU Scalper*""")
-        print(f"TP HIT: {direction} {result_pct:+.2f}%")
+        print(f"TP HIT: {direction} raw:{raw_pct:+.2f}% | {LEVERAGE}x:{lev_pct:+.1f}%")
 
     elif sl_hit:
-        result_pct = (price - entry) / entry * 100 if direction == "LONG" else (entry - price) / entry * 100
-        if abs(result_pct) < 0.05:
+        raw_pct = (price - entry) / entry * 100 if direction == "LONG" else (entry - price) / entry * 100
+        result_pct = raw_pct
+        lev_pct = raw_pct * LEVERAGE
+        if abs(raw_pct) < 0.05:
             label, emoji, res = "〽️ BREAKEVEN", "🟡", "BREAKEVEN"
         else:
             label, emoji, res = "❌ ZARAR", "🔴", "SL_HIT"
@@ -769,12 +770,12 @@ def watch_trade(trade):
         send_telegram(f"""🛑 *XAU SL ULAŞTI* {emoji}
 ━━━━━━━━━━━━━━━━━━
 {label}
-📍 Fiyat: `{price:.2f}` | 💰 Giriş: `{entry:.2f}`
+📍 Çıkış: `{price:.2f}` | 💰 Giriş: `{entry:.2f}`
 🎯 TP: `{tp:.2f}` (+{tp_pct:.2f}%) | 🔒 SL: `{sl:.2f}` (-{sl_pct:.2f}%)
-📊 Sonuç: `{result_pct:+.2f}%` | ⚖️ RR: 1:{rr}
+📊 Ham: `{raw_pct:+.2f}%` | 🔥 {LEVERAGE}x: `{lev_pct:+.1f}%` | ⚖️ RR: 1:{rr}
 ━━━━━━━━━━━━━━━━━━
 📡 *Bot 3 — XAU Scalper*""")
-        print(f"SL HIT: {direction} {result_pct:+.2f}%")
+        print(f"SL HIT: {direction} raw:{raw_pct:+.2f}% | {LEVERAGE}x:{lev_pct:+.1f}%")
 
     else:
         pnl = (price - entry) / entry * 100 if direction == "LONG" else (entry - price) / entry * 100
