@@ -71,7 +71,7 @@ def get_open_trades():
 def get_all_trades(limit=200):
     for attempt in range(2):
         try:
-            r = requests.get(BASE44_API, headers=b44_headers(), params={"_limit": limit}, timeout=15)
+            r = requests.get(BASE44_API, headers=b44_headers(), params={"limit": limit}, timeout=15)
             if r.status_code == 200:
                 return r.json() if isinstance(r.json(), list) else r.json().get("records", [])
             elif r.status_code == 403 and attempt == 0:
