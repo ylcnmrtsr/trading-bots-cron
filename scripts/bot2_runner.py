@@ -288,10 +288,12 @@ def self_learn():
     """
     try:
         all_trades = get_all_trades(100)
+        avoid = set(PARAMS.get("avoidCoins", [])) | {"XAUUSDT"}
         closed = [t for t in all_trades
                   if t.get("status") in ("TP_HIT", "SL_HIT")
                   and t.get("result_pct") is not None
-                  and t.get("symbol")]
+                  and t.get("symbol")
+                  and t.get("symbol") not in avoid]
 
         if not closed:
             print("  Bot2 self-learn: hiç kapanan işlem yok")
