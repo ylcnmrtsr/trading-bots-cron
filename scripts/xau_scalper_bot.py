@@ -755,7 +755,10 @@ def watch_trade(trade):
             label, emoji = "〽️ BREAKEVEN", "🟡"
         else:
             label, emoji = "❌ ZARAR", "🔴"
-        close_trade(trade_id, "TP_HIT", result_pct)
+        try:
+            close_trade(trade_id, "TP_HIT", result_pct)
+        except Exception as e:
+            print(f"  close_trade exception: {e}")
         sl_pct_orig = abs(entry - orig_sl) / entry * 100
         tp_pct_now  = abs(entry - tp) / entry * 100
         send_telegram(f"""🎯 *XAU TP ULAŞTI* {emoji}
@@ -779,18 +782,31 @@ def watch_trade(trade):
             label, emoji, res = "〽️ BREAKEVEN", "🟡", "BREAKEVEN"
         else:
             label, emoji, res = "❌ ZARAR", "🔴", "SL_HIT"
-        close_trade(trade_id, res, result_pct)
+        # close_trade ve send_telegram birbirinden bağımsız — biri hata verse diğeri çalışsın
+        try:
+            close_trade(trade_id, res, result_pct)
+        except Exception as e:
+            print(f"  close_trade exception: {e}")
         sl_pct_now  = abs(entry - sl) / entry * 100
         tp_pct_now  = abs(entry - tp) / entry * 100
-        send_telegram(f"""🛑 *XAU SL ULAŞTI* {emoji}
+        orig_pct    = abs(entry - orig_sl) / entry * 100
+        sl_note = ""
+        if trade.get("sl_moved_profit"):
+            sl_note = "\n⚡ SL kâr bölgesine taşınmıştı"
+        elif trade.get("sl_moved_breakeven"):
+            sl_note = "\n⚡ SL breakeven'a taşınmıştı"
+        try:
+            send_telegram(f"""🛑 *XAU SL ULAŞTI* {emoji}
 ━━━━━━━━━━━━━━━━━━
 {label} | 100x: `{levered:+.2f}%`
 📍 Fiyat: `{price:.2f}` | 💰 Giriş: `{entry:.2f}`
 🎯 TP: `{tp:.2f}` (+{tp_pct_now:.2f}%) | 🔒 SL: `{sl:.2f}` (-{sl_pct_now:.2f}%)
-📊 Ham: `{result_pct:+.2f}%` | ⚖️ RR: 1:{rr}
+📊 Ham: `{result_pct:+.2f}%` | ⚖️ RR: 1:{rr}{sl_note}
 ━━━━━━━━━━━━━━━━━━
 📡 *Bot 3 — XAU Scalper*""")
-        print(f"  SL HIT: {direction} {result_pct:+.2f}%")
+        except Exception as e:
+            print(f"  send_telegram exception: {e}")
+        print(f"  SL HIT: {direction} {result_pct:+.2f}% [{label}]")
         return
 
     # ── İŞLEM DEVAM EDİYOR — SL/TP güncelleme mantığı ────────────────────
