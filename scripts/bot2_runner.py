@@ -69,9 +69,21 @@ def get_open_trades():
     return []
 
 def get_all_trades(limit=200):
-    r = requests.get(BASE44_API, headers=b44_headers(), params={"_limit": limit}, timeout=15)
-    if r.status_code == 200:
-        return r.json() if isinstance(r.json(), list) else r.json().get("records", [])
+    for attempt in range(2):
+        try:
+            r = requests.get(BASE44_API, headers=b44_headers(), params={"_limit": limit}, timeout=15)
+            if r.status_code == 200:
+                return r.json() if isinstance(r.json(), list) else r.json().get("records", [])
+            elif r.status_code == 403 and attempt == 0:
+                print("  get_all_trades 403 — token yenileniyor...")
+                refresh_token()
+                continue
+            else:
+                print(f"  get_all_trades error: {r.status_code} {r.text[:80]}")
+                break
+        except Exception as e:
+            print(f"  get_all_trades exception: {e}")
+            break
     return []
 
 def create_trade(trade_data):
