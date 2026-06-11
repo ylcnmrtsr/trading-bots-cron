@@ -16,7 +16,7 @@ CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "2055780815")
 BITGET_BASE = "https://api.bitget.com/api/v2"
 
 BASE44_CACHE_API = "https://app.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/BotCache"
-BASE44_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJjbGllbnRfaWQiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJhcHBfaWQiOiI2YTFkOTczNTY4YWY5Yjk4NGUwZjFjYzgiLCJhdWQiOiJiYXNlNDRfYXBpIiwic2NvcGUiOiJhcHAuYWNjZXNzIiwiZXhwIjoxNzgxMjA3NDkxLCJpYXQiOjE3ODEyMDM4OTF9.PfoHpBjgwFxAcJ0F4yXAeQtpXD839hTLy-PQftQ9X8k"  # static api_key — JWT karışıklığını önler
+BASE44_TOKEN = "d1e53ae9295b46a0bd197d93627ca7a0"  # static api_key — JWT karışıklığını önler
 CACHE_KEY = "btc_signal_cache"
 
 SIGNAL_THRESHOLD = 3.0
@@ -28,7 +28,7 @@ def b44_headers():
 
 def refresh_token():
     global BASE44_TOKEN
-    BASE44_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJjbGllbnRfaWQiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJhcHBfaWQiOiI2YTFkOTczNTY4YWY5Yjk4NGUwZjFjYzgiLCJhdWQiOiJiYXNlNDRfYXBpIiwic2NvcGUiOiJhcHAuYWNjZXNzIiwiZXhwIjoxNzgxMjA3NDkxLCJpYXQiOjE3ODEyMDM4OTF9.PfoHpBjgwFxAcJ0F4yXAeQtpXD839hTLy-PQftQ9X8k"
+    BASE44_TOKEN = "d1e53ae9295b46a0bd197d93627ca7a0"
     print(f"  Token OK: {BASE44_TOKEN[:8]}...")
 
 def load_cache():
