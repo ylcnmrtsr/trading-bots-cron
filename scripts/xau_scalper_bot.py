@@ -21,9 +21,8 @@ BITGET_BASE    = "https://api.bitget.com"
 
 def refresh_token():
     global BASE44_TOKEN
-    # Her zaman 32-char static api_key kullan — JWT/env karışıklığını önler
     BASE44_TOKEN = "d1e53ae9295b46a0bd197d93627ca7a0"
-    print(f"  Token sabit api_key: {BASE44_TOKEN[:8]}...")
+    print(f"  Token OK: {BASE44_TOKEN[:8]}...")
 
 # ── HEADERS & BASE_URL ─────────────────────────────────────────────────
 HEADERS  = lambda: {"api_key": BASE44_TOKEN, "Content-Type": "application/json"}
