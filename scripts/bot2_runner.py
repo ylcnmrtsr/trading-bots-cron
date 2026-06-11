@@ -80,10 +80,21 @@ def get_all_trades(limit=200):
     return []
 
 def create_trade(trade_data):
-    r = requests.post(BASE44_API, headers=b44_headers(), json=trade_data, timeout=15)
-    if r.status_code in (200, 201):
-        return r.json()
-    print(f"DB CREATE error: {r.status_code} {r.text[:200]}")
+    for attempt in range(2):
+        try:
+            resp = requests.post(BASE44_API, headers=b44_headers(), json=trade_data, timeout=15)
+            if resp.status_code in (200, 201):
+                return resp.json()
+            elif resp.status_code == 403 and attempt == 0:
+                print(f"  create_trade 403 — token yenileniyor...")
+                refresh_token()
+                continue
+            else:
+                print(f"  DB CREATE error: {resp.status_code} {resp.text[:200]}")
+                break
+        except Exception as e:
+            print(f"  create_trade exception: {e}")
+            break
     return None
 
 def update_trade(trade_id, update_data):
