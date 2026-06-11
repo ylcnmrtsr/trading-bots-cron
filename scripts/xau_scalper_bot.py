@@ -865,7 +865,7 @@ def watch_trade(trade):
     if update_data:
         for attempt in range(2):
             try:
-                rp = requests.patch(
+                rp = requests.put(
                     f"{BASE_URL}/ActiveTrade/{trade_id}",
                     headers=HEADERS(), json=update_data, timeout=10
                 )
