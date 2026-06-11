@@ -21,10 +21,9 @@ BITGET_BASE    = "https://api.bitget.com"
 
 def refresh_token():
     global BASE44_TOKEN
-    # BASE44_API_KEY env var'dan taze token al
-    new_tok = os.environ.get("BASE44_API_KEY", "")
-    if new_tok and len(new_tok) > 20:
-        BASE44_TOKEN = new_tok
+    # Her zaman 32-char static api_key kullan — JWT/env karışıklığını önler
+    BASE44_TOKEN = "d1e53ae9295b46a0bd197d93627ca7a0"
+    print(f"  Token sabit api_key: {BASE44_TOKEN[:8]}...")
 
 # ── HEADERS & BASE_URL ─────────────────────────────────────────────────
 HEADERS  = lambda: {"api_key": BASE44_TOKEN, "Content-Type": "application/json"}
@@ -639,7 +638,7 @@ def self_learn(params):
 
 # ── BASE44 CRUD ────────────────────────────────────────────────────────
 def get_open_trade():
-    """XAUUSDT'de açık işlem varsa döndür — 403 durumunda token refresh + retry"""
+    """XAUUSDT'de açık işlem varsa döndür. DB'ye ulaşılamazsa 'UNKNOWN' döner — scan engellenir."""
     for attempt in range(2):
         try:
             r = requests.get(f"{BASE_URL}/ActiveTrade", headers=HEADERS(),
@@ -654,10 +653,11 @@ def get_open_trade():
                 continue
             else:
                 print(f"  DB GET error: {r.status_code} {r.text[:100]}")
-                break
+                return "UNKNOWN"  # DB'ye ulaşılamıyor — scan yapma, güvenli mod
         except Exception as e:
             print(f"  DB GET exception: {e}")
-            break
+            return "UNKNOWN"  # Hata durumunda da scan engelle
+    return "UNKNOWN"  # Tüm denemeler başarısız
     return None
 
 
@@ -943,6 +943,10 @@ def main():
         set_cache("bot3_last_learn", str(now_ts))
 
     open_trade = get_open_trade()
+
+    if open_trade == "UNKNOWN":
+        print("  ⚠️ DB'ye ulaşılamıyor — scan ve watch atlanıyor (güvenli mod)")
+        return
 
     if mode in ("watch", "both") and open_trade:
         print(f"  Açık işlem izleniyor: {open_trade['direction']} | ID:{open_trade['id']}")
