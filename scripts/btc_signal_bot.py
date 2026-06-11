@@ -16,7 +16,7 @@ CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "2055780815")
 BITGET_BASE = "https://api.bitget.com/api/v2"
 
 BASE44_CACHE_API = "https://app.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/BotCache"
-BASE44_TOKEN = os.environ.get("BASE44_API_KEY", "d1e53ae9295b46a0bd197d93627ca7a0")
+BASE44_TOKEN = "d1e53ae9295b46a0bd197d93627ca7a0"  # static api_key — JWT karışıklığını önler
 CACHE_KEY = "btc_signal_cache"
 
 SIGNAL_THRESHOLD = 3.0
