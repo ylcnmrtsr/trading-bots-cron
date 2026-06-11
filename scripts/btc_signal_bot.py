@@ -26,28 +26,54 @@ READY_THRESHOLD = 1.8
 def b44_headers():
     return {"api_key": BASE44_TOKEN, "Content-Type": "application/json"}
 
+def refresh_token():
+    global BASE44_TOKEN
+    new_tok = os.environ.get("BASE44_API_KEY", "")
+    if new_tok and new_tok != BASE44_TOKEN:
+        BASE44_TOKEN = new_tok
+        print(f"  Token yenilendi: {new_tok[:8]}...")
+
 def load_cache():
-    try:
-        r = requests.get(BASE44_CACHE_API, headers=b44_headers(), params={"key": CACHE_KEY}, timeout=10)
-        if r.status_code == 200:
-            records = r.json() if isinstance(r.json(), list) else r.json().get("records", [])
-            if records:
-                return json.loads(records[0]["value"]), records[0]["id"]
-    except Exception as e:
-        print(f"Cache load error: {e}")
+    for attempt in range(2):
+        try:
+            resp = requests.get(BASE44_CACHE_API, headers=b44_headers(), params={"key": CACHE_KEY}, timeout=10)
+            if resp.status_code == 200:
+                records = resp.json() if isinstance(resp.json(), list) else resp.json().get("records", [])
+                if records:
+                    return json.loads(records[0]["value"]), records[0]["id"]
+                return {"last_signal": "", "last_ready": "", "last_price": 0}, None
+            elif resp.status_code == 403 and attempt == 0:
+                print(f"  load_cache 403 — token yenileniyor...")
+                refresh_token()
+                continue
+            else:
+                print(f"  Cache load error: {resp.status_code}")
+                break
+        except Exception as e:
+            print(f"  Cache load error: {e}")
+            break
     return {"last_signal": "", "last_ready": "", "last_price": 0}, None
 
 def save_cache(data, record_id=None):
-    try:
-        payload = {"key": CACHE_KEY, "value": json.dumps(data)}
-        if record_id:
-            r = requests.put(f"{BASE44_CACHE_API}/{record_id}", headers=b44_headers(), json=payload, timeout=10)
-        else:
-            r = requests.post(BASE44_CACHE_API, headers=b44_headers(), json=payload, timeout=10)
-        if r.status_code not in (200, 201):
-            print(f"Cache save error: {r.status_code} {r.text[:100]}")
-    except Exception as e:
-        print(f"Cache save error: {e}")
+    for attempt in range(2):
+        try:
+            payload = {"key": CACHE_KEY, "value": json.dumps(data)}
+            if record_id:
+                resp = requests.put(f"{BASE44_CACHE_API}/{record_id}", headers=b44_headers(), json=payload, timeout=10)
+            else:
+                resp = requests.post(BASE44_CACHE_API, headers=b44_headers(), json=payload, timeout=10)
+            if resp.status_code in (200, 201):
+                break
+            elif resp.status_code == 403 and attempt == 0:
+                print(f"  save_cache 403 — token yenileniyor...")
+                refresh_token()
+                continue
+            else:
+                print(f"  Cache save error: {resp.status_code} {resp.text[:100]}")
+                break
+        except Exception as e:
+            print(f"  Cache save error: {e}")
+            break
 
 # ── TELEGRAM ──────────────────────────────────────────────────────────
 def send_telegram(msg):
@@ -312,6 +338,9 @@ def main():
     ob_score, bid_wall, ask_wall, wall_note = get_order_book_signal("BTCUSDT", price)
     print(f"  OB: bid={bid_wall} ask={ask_wall} skor={ob_score} | {wall_note}")
 
+    # Likidasyon bazlı TP hedefi — direction henüz bilinmiyor, tahminle hesapla
+    liq_tp = None  # sinyal oluştuktan sonra doğru yönde doldurulacak
+
     is_long_signal  = weighted >= sig_threshold and vol_ok_1h and ob_score >= 0
     is_short_signal = weighted <= -sig_threshold and vol_ok_1h and ob_score <= 0
     is_long_ready   = rdy_threshold <= weighted < sig_threshold
@@ -323,6 +352,7 @@ def main():
     if is_long_signal or is_short_signal:
         direction_raw = "LONG" if is_long_signal else "SHORT"
         direction = "LONG 🟢" if is_long_signal else "SHORT 🔴"
+        liq_tp = get_tp_from_liquidity("BTCUSDT", price, direction_raw)
         if cache.get("last_signal") != direction_raw or price_moved:
             send_telegram(
                 f"🚨 *BTC İŞLEM SİNYALİ*\n"
