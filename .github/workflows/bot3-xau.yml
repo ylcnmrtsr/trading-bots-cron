@@ -1,7 +1,7 @@
 name: Bot3 XAU Scalper
 on:
   schedule:
-    - cron: "* * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       mode:
