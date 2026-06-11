@@ -688,12 +688,22 @@ def create_trade(signal):
     return None
 
 def close_trade(trade_id, result, result_pct):
-    try:
-        requests.patch(f"{BASE_URL}/ActiveTrade/{trade_id}", headers=HEADERS(),
-                       json={"status": result, "close_time": datetime.now(timezone.utc).isoformat(),
-                             "result_pct": round(result_pct, 2)}, timeout=10)
-    except Exception as e:
-        print(f"DB PATCH error: {e}")
+    for attempt in range(2):
+        try:
+            resp = requests.put(f"{BASE_URL}/ActiveTrade/{trade_id}", headers=HEADERS(),
+                           json={"status": result, "close_time": datetime.now(timezone.utc).isoformat(),
+                                 "result_pct": round(result_pct, 2)}, timeout=10)
+            if resp.status_code in (200, 201):
+                break
+            elif resp.status_code == 403 and attempt == 0:
+                refresh_token()
+                continue
+            else:
+                print(f"  close_trade error: {resp.status_code}")
+                break
+        except Exception as e:
+            print(f"  close_trade exception: {e}")
+            break
 
 # ── TELEGRAM ──────────────────────────────────────────────────────────
 def send_telegram(msg):
