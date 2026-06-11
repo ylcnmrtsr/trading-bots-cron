@@ -28,10 +28,9 @@ def b44_headers():
 
 def refresh_token():
     global BASE44_TOKEN
-    new_tok = os.environ.get("BASE44_API_KEY", "")
-    if new_tok and new_tok != BASE44_TOKEN:
-        BASE44_TOKEN = new_tok
-        print(f"  Token yenilendi: {new_tok[:8]}...")
+    # Her zaman 32-char static api_key kullan — JWT/env karışıklığını önler
+    BASE44_TOKEN = "d1e53ae9295b46a0bd197d93627ca7a0"
+    print(f"  Token sabit api_key: {BASE44_TOKEN[:8]}...")
 
 def load_cache():
     for attempt in range(2):
