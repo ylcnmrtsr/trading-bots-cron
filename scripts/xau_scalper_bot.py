@@ -639,15 +639,25 @@ def self_learn(params):
 
 # ── BASE44 CRUD ────────────────────────────────────────────────────────
 def get_open_trade():
-    """XAUUSDT'de açık işlem varsa döndür (kendi işlemini izler)"""
-    try:
-        r = requests.get(f"{BASE_URL}/ActiveTrade", headers=HEADERS(),
-                         params={"status": "OPEN"}, timeout=10)
-        if r.status_code == 200:
-            xau = [t for t in r.json() if t.get("symbol") == SYMBOL and t.get("status") == "OPEN"]
-            return xau[0] if xau else None
-    except Exception as e:
-        print(f"DB GET error: {e}")
+    """XAUUSDT'de açık işlem varsa döndür — 403 durumunda token refresh + retry"""
+    for attempt in range(2):
+        try:
+            r = requests.get(f"{BASE_URL}/ActiveTrade", headers=HEADERS(),
+                             params={"status": "OPEN"}, timeout=10)
+            if r.status_code == 200:
+                data = r.json() if isinstance(r.json(), list) else r.json().get("records", [])
+                xau = [t for t in data if t.get("symbol") == SYMBOL and t.get("status") == "OPEN"]
+                return xau[0] if xau else None
+            elif r.status_code == 403 and attempt == 0:
+                print(f"  get_open_trade 403 — token yenileniyor...")
+                refresh_token()
+                continue
+            else:
+                print(f"  DB GET error: {r.status_code} {r.text[:100]}")
+                break
+        except Exception as e:
+            print(f"  DB GET exception: {e}")
+            break
     return None
 
 
@@ -818,6 +828,12 @@ def main():
     if mode in ("scan", "both") and not open_trade:
         print("🔍 XAU taranıyor...")
         signal = analyze(params)
+        if signal:
+            # Race condition önlemi: sinyal üretildikten sonra bir kez daha kontrol et
+            double_check = get_open_trade()
+            if double_check:
+                print(f"  ⚠️ Sinyal var ama işlem zaten açık (race condition engellendi): {double_check['direction']} @ {double_check['entry_price']}")
+                signal = None
         if signal:
             trade_id = create_trade(signal)
             pat_info = f" | Pattern: {signal['pattern']}" if signal.get("pattern") and signal["pattern"] != "yok" else ""
