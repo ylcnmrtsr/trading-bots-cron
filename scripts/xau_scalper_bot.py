@@ -515,7 +515,10 @@ def analyze(params):
     # ── MUM PATTERN ──
     pat_score, pat_name = check_candle_pattern(candles_5m, direction)
     print(f"  Mum pattern: {pat_name} (skor:{pat_score})")
-    # Pattern yoksa (0) sinyal yine de gidebilir ama log'a yaz
+    # Pattern ZORUNLU — yoksa sinyal geçmez
+    if pat_score == 0:
+        print(f"  Pattern yok — sinyal engellendi")
+        return None
     # Pattern 2+ ise skoru artır (bonus)
 
     # ── ATR bazlı SL/TP — 15m ATR kullan (5m çok dar, noise'a takılır) ──
