@@ -141,29 +141,43 @@ def get_blacklisted():
 BOTCACHE_API = "https://app.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/BotCache"
 
 def get_cache(key):
-    try:
-        r = requests.get(BOTCACHE_API, headers=b44_headers(), params={"key": key}, timeout=8)
-        if r.status_code == 200:
-            for item in r.json():
-                if item.get("key") == key:
-                    return item.get("value")
-    except: pass
+    for attempt in range(2):
+        try:
+            r = requests.get(BOTCACHE_API, headers=b44_headers(), params={"key": key}, timeout=8)
+            if r.status_code == 200:
+                data = r.json() if isinstance(r.json(), list) else r.json().get("records", [])
+                for item in data:
+                    if item.get("key") == key:
+                        return item.get("value")
+                return None
+            elif r.status_code == 403 and attempt == 0:
+                refresh_token(); continue
+            else:
+                break
+        except: break
     return None
 
 def set_cache(key, value):
-    try:
-        r = requests.get(BOTCACHE_API, headers=b44_headers(), params={"key": key}, timeout=8)
-        existing = None
-        if r.status_code == 200:
-            for item in r.json():
-                if item.get("key") == key:
-                    existing = item; break
-        if existing:
-            requests.put(f"{BOTCACHE_API}/{existing['id']}", headers=b44_headers(), json={"key": key, "value": value}, timeout=8)
-        else:
-            requests.post(BOTCACHE_API, headers=b44_headers(), json={"key": key, "value": value}, timeout=8)
-    except Exception as e:
-        print(f"Cache set error: {e}")
+    for attempt in range(2):
+        try:
+            r = requests.get(BOTCACHE_API, headers=b44_headers(), params={"key": key}, timeout=8)
+            if r.status_code == 403 and attempt == 0:
+                refresh_token(); continue
+            existing = None
+            if r.status_code == 200:
+                data = r.json() if isinstance(r.json(), list) else r.json().get("records", [])
+                for item in data:
+                    if item.get("key") == key:
+                        existing = item; break
+            if existing:
+                requests.put(f"{BOTCACHE_API}/{existing['id']}", headers=b44_headers(),
+                             json={"key": key, "value": value}, timeout=8)
+            else:
+                requests.post(BOTCACHE_API, headers=b44_headers(),
+                              json={"key": key, "value": value}, timeout=8)
+            break
+        except Exception as e:
+            print(f"Cache set error: {e}"); break
 
 # ── PER-COIN PARAMETRE DEFAULTS ───────────────────────────────────────
 COIN_PARAM_DEFAULTS = {
