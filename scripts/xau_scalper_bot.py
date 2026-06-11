@@ -795,8 +795,15 @@ def watch_trade(trade):
             sl_note = "\n⚡ SL kâr bölgesine taşınmıştı"
         elif trade.get("sl_moved_breakeven"):
             sl_note = "\n⚡ SL breakeven'a taşınmıştı"
+        # Başlık sonuca göre belirleniyor
+        if result_pct > 0.05:
+            header = "✅ *XAU KAR İLE ÇIKTI*"
+        elif abs(result_pct) <= 0.05:
+            header = "〽️ *XAU BREAKEVEN ÇIKTI*"
+        else:
+            header = "🛑 *XAU SL ULAŞTI*"
         try:
-            send_telegram(f"""🛑 *XAU SL ULAŞTI* {emoji}
+            send_telegram(f"""{header} {emoji}
 ━━━━━━━━━━━━━━━━━━
 {label} | 100x: `{levered:+.2f}%`
 📍 Fiyat: `{price:.2f}` | 💰 Giriş: `{entry:.2f}`
