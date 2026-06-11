@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN_7", "")
 CHAT_ID        = "2055780815"
-BASE44_TOKEN   = os.environ.get("BASE44_API_KEY", "d1e53ae9295b46a0bd197d93627ca7a0")
+BASE44_TOKEN   = "d1e53ae9295b46a0bd197d93627ca7a0"  # static api_key
 APP_ID         = "6a1d973568af9b984e0f1cc8"
 SYMBOL         = "XAUUSDT"
 BITGET_BASE    = "https://api.bitget.com"
