@@ -23,7 +23,7 @@ BASE44_TOKEN = os.environ.get("BASE44_API_KEY", "d1e53ae9295b46a0bd197d93627ca7a
 def refresh_token():
     """BASE44_TOKEN'ı sabit api_key ile yenile — JWT karışıklığını önler"""
     global BASE44_TOKEN
-    BASE44_TOKEN = "d1e53ae9295b46a0bd197d93627ca7a0"
+    BASE44_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJjbGllbnRfaWQiOiJiOWJmNGFmZC1iMmIxLTQxMDYtYWU2OS04ZWYwYTFlNzQxMDQiLCJhcHBfaWQiOiI2YTFkOTczNTY4YWY5Yjk4NGUwZjFjYzgiLCJhdWQiOiJiYXNlNDRfYXBpIiwic2NvcGUiOiJhcHAuYWNjZXNzIiwiZXhwIjoxNzgxMTg5NjU4LCJpYXQiOjE3ODExODYwNTh9.WwZczhDkQidTh8LRdFENSLUq-VTx5hJwDer4ZddwjvQ"
     print(f"  Token sabit api_key: {BASE44_TOKEN[:8]}...")
 
 
