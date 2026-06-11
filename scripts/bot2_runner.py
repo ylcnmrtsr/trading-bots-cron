@@ -21,14 +21,10 @@ BASE44_API = "https://app.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/
 BASE44_TOKEN = os.environ.get("BASE44_API_KEY", "d1e53ae9295b46a0bd197d93627ca7a0")
 
 def refresh_token():
-    """BASE44_TOKEN'ı .env veya env değişkeninden yenile"""
+    """BASE44_TOKEN'ı sabit api_key ile yenile — JWT karışıklığını önler"""
     global BASE44_TOKEN
-    new_tok = os.environ.get("BASE44_API_KEY", "")
-    if new_tok and new_tok != BASE44_TOKEN:
-        BASE44_TOKEN = new_tok
-        print(f"  Token yenilendi: {new_tok[:8]}...")
-    else:
-        print(f"  Token zaten güncel: {BASE44_TOKEN[:8]}...")
+    BASE44_TOKEN = "d1e53ae9295b46a0bd197d93627ca7a0"
+    print(f"  Token sabit api_key: {BASE44_TOKEN[:8]}...")
 
 
 PARAMS = {
