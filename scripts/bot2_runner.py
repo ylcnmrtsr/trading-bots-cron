@@ -87,10 +87,21 @@ def create_trade(trade_data):
     return None
 
 def update_trade(trade_id, update_data):
-    r = requests.put(f"{BASE44_API}/{trade_id}", headers=b44_headers(), json=update_data, timeout=15)
-    if r.status_code == 200:
-        return r.json()
-    print(f"DB UPDATE error: {r.status_code} {r.text[:200]}")
+    for attempt in range(2):
+        try:
+            resp = requests.put(f"{BASE44_API}/{trade_id}", headers=b44_headers(), json=update_data, timeout=15)
+            if resp.status_code == 200:
+                return resp.json()
+            elif resp.status_code == 403 and attempt == 0:
+                print(f"  update_trade 403 — token yenileniyor...")
+                refresh_token()
+                continue
+            else:
+                print(f"  DB UPDATE error: {resp.status_code} {resp.text[:200]}")
+                break
+        except Exception as e:
+            print(f"  update_trade exception: {e}")
+            break
     return None
 
 def get_blacklisted():
