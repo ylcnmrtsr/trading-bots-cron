@@ -70,8 +70,8 @@ def save_params(p):
                     break
         val = json.dumps(p)
         if existing:
-            requests.patch(f"{BASE_URL}/BotCache/{existing['id']}",
-                           headers=HEADERS(), json={"value": val}, timeout=8)
+            requests.put(f"{BASE_URL}/BotCache/{existing['id']}",
+                         headers=HEADERS(), json={"key": "bot3_params", "value": val}, timeout=8)
         else:
             requests.post(f"{BASE_URL}/BotCache", headers=HEADERS(),
                           json={"key": "bot3_params", "value": val}, timeout=8)
@@ -102,8 +102,8 @@ def set_cache(key, value):
                     existing = item
                     break
         if existing:
-            requests.patch(f"{BASE_URL}/BotCache/{existing['id']}",
-                           headers=HEADERS(), json={"value": value}, timeout=8)
+            requests.put(f"{BASE_URL}/BotCache/{existing['id']}",
+                         headers=HEADERS(), json={"key": key, "value": value}, timeout=8)
         else:
             requests.post(f"{BASE_URL}/BotCache", headers=HEADERS(),
                           json={"key": key, "value": value}, timeout=8)
