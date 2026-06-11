@@ -1,15 +1,16 @@
-import requests, base64, os, re
+import requests, base64, os
 from nacl import encoding, public
 
 gh_token = os.environ.get("GH_PAT", "")
-# Mevcut token'ı al - script her calıstigında yeni token inject edilmiş olacak
-current_token = os.environ.get("BASE44_SERVICE_TOKEN", "")
+service_token = os.environ.get("BASE44_SERVICE_TOKEN", "")
+# Static 32-char API key — JWT DEĞİL
+STATIC_API_KEY = "d1e53ae9295b46a0bd197d93627ca7a0"
 
-if not current_token:
+if not service_token:
     print("BASE44_SERVICE_TOKEN bulunamadi!")
     exit(1)
 
-print(f"Token alindi: {current_token[:40]}...")
+print(f"Token alindi: {service_token[:40]}...")
 
 headers = {
     "Authorization": f"Bearer {gh_token}",
@@ -21,41 +22,27 @@ headers = {
 pk_r = requests.get("https://api.github.com/repos/ylcnmrtsr/trading-bots-cron/actions/secrets/public-key", headers=headers)
 pk = pk_r.json()
 
-# Token encrypt et
-pub_key = public.PublicKey(base64.b64decode(pk["key"]))
-sealed = public.SealedBox(pub_key).encrypt(current_token.encode())
-enc = base64.b64encode(sealed).decode()
+def encrypt_secret(value, pub_key_b64, key_id):
+    pub_key = public.PublicKey(base64.b64decode(pub_key_b64))
+    sealed = public.SealedBox(pub_key).encrypt(value.encode())
+    return base64.b64encode(sealed).decode()
 
-# GitHub Secret guncelle
-for secret in ["BASE44_API_KEY", "BASE44_SERVICE_TOKEN"]:
-    resp = requests.put(
-        f"https://api.github.com/repos/ylcnmrtsr/trading-bots-cron/actions/secrets/{secret}",
-        headers=headers,
-        json={"encrypted_value": enc, "key_id": pk["key_id"]}
-    )
-    print(f"{secret}: HTTP {resp.status_code} {'OK' if resp.status_code in [201,204] else 'FAIL'}")
+# BASE44_API_KEY secret'a STATIC KEY yaz (JWT değil!)
+enc_api = encrypt_secret(STATIC_API_KEY, pk["key"], pk["key_id"])
+r1 = requests.put(
+    "https://api.github.com/repos/ylcnmrtsr/trading-bots-cron/actions/secrets/BASE44_API_KEY",
+    headers=headers,
+    json={"encrypted_value": enc_api, "key_id": pk["key_id"]}
+)
+print(f"BASE44_API_KEY: HTTP {r1.status_code} {'OK' if r1.status_code in [201,204] else 'FAIL'}")
 
-# Script dosyalarindaki hardcode token'i de guncelle
-scripts = ["scripts/bot2_runner.py", "scripts/btc_signal_bot.py"]
-for script in scripts:
-    url = f"https://api.github.com/repos/ylcnmrtsr/trading-bots-cron/contents/{script}"
-    r = requests.get(url, headers=headers)
-    if r.status_code != 200:
-        print(f"{script}: dosya bulunamadi, atlaniyor")
-        continue
-    d = r.json()
-    content = base64.b64decode(d["content"]).decode()
-    match = re.search(r'BASE44_TOKEN = "([^"]+)"', content)
-    if match:
-        new_content = content.replace(match.group(0), f'BASE44_TOKEN = "{current_token}"')
-        new_b64 = base64.b64encode(new_content.encode()).decode()
-        resp = requests.put(url, headers=headers, json={
-            "message": "chore: auto-refresh BASE44 token [skip ci]",
-            "content": new_b64,
-            "sha": d["sha"]
-        })
-        print(f"{script}: HTTP {resp.status_code} {'OK' if resp.status_code in [200,201] else 'FAIL'}")
-    else:
-        print(f"{script}: BASE44_TOKEN pattern bulunamadi")
+# BASE44_SERVICE_TOKEN secret'a JWT yaz (ayrı tutuluyor)
+enc_svc = encrypt_secret(service_token, pk["key"], pk["key_id"])
+r2 = requests.put(
+    "https://api.github.com/repos/ylcnmrtsr/trading-bots-cron/actions/secrets/BASE44_SERVICE_TOKEN",
+    headers=headers,
+    json={"encrypted_value": enc_svc, "key_id": pk["key_id"]}
+)
+print(f"BASE44_SERVICE_TOKEN: HTTP {r2.status_code} {'OK' if r2.status_code in [201,204] else 'FAIL'}")
 
 print("Token yenileme tamamlandi!")
