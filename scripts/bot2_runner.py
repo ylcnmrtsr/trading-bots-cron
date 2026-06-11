@@ -152,7 +152,7 @@ def set_cache(key, value):
                 if item.get("key") == key:
                     existing = item; break
         if existing:
-            requests.patch(f"{BOTCACHE_API}/{existing['id']}", headers=b44_headers(), json={"value": value}, timeout=8)
+            requests.put(f"{BOTCACHE_API}/{existing['id']}", headers=b44_headers(), json={"key": key, "value": value}, timeout=8)
         else:
             requests.post(BOTCACHE_API, headers=b44_headers(), json={"key": key, "value": value}, timeout=8)
     except Exception as e:
