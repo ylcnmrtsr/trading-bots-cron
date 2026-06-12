@@ -603,9 +603,8 @@ def self_learn(params):
             if new_params["threshold"] < 4.5:
                 new_params["threshold"] = round(new_params["threshold"] + 0.2, 1)
                 changed.append(f"eşik ↑{new_params['threshold']}")
-            if new_params["min_volume_mult"] < 2.0:
-                new_params["min_volume_mult"] = round(new_params["min_volume_mult"] + 0.1, 1)
-                changed.append(f"hacim ↑{new_params['min_volume_mult']}")
+            # min_volume_mult self-learn'den çıkarıldı — 1.2x sabit
+            pass  # hacim eşiği sabit 1.2x
 
         # Win rate yüksekse → biraz daha agresif ol (eşiği azalt)
         elif win_rate >= 0.7 and len(recent) >= 4:
