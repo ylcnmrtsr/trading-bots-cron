@@ -478,8 +478,7 @@ def analyze(params):
 📐 TF: {tf_str}
 🔔 Sinyal eşiğine yakın, izle!
 ━━━━━━━━━━━━━━━━━━
-📚 OB: Alış `{bid_wall:.1f}` / Satış `{ask_wall:.1f}` | {wall_note}
-🎯 Liq TP: `{liq_tp:.2f}`
+🎯 Liq TP: Hesaplanıyor...
 ━━━━━━━━━━━━━━━━━━
 📡 *Bot 3 — XAU Scalper*"""
         send_telegram(msg)
