@@ -283,11 +283,11 @@ def get_candles_yfinance(tf_key, limit=100):
 
 # ── SELF-LEARNING PARAMETRELERİ ───────────────────────────────────────
 DEFAULT_PARAMS = {
-    "threshold":       3.5,
-    "alert_threshold": 3.0,
+    "threshold":       2.0,   # Düşürüldü: 3.5 -> 2.0 (daha sık sinyal)
+    "alert_threshold": 1.5,   # Düşürüldü: 3.0 -> 1.5
     "sl_atr_mult":     1.0,
-    "min_volume_mult": 1.2,
-    "rr_min":          3.0,
+    "min_volume_mult": 0.7,   # Gevşetildi: 1.2 -> 0.7 (hacim filtresi hafif)
+    "rr_min":          2.0,   # Düşürüldü: 3.0 -> 2.0
     "wins": 0, "losses": 0, "total_pct": 0.0,
     "version": 1
 }
@@ -467,11 +467,11 @@ def get_dynamic_threshold(candles_15m, base_threshold=3.5):
     if not atr or price == 0: return base_threshold
     atr_pct = (atr / price) * 100
 
-    if   atr_pct > 0.20:  adj = base_threshold - 0.5   # Çok volatil
-    elif atr_pct > 0.12:  adj = base_threshold - 0.2
-    elif atr_pct < 0.04:  adj = base_threshold + 0.5   # Sıkışık
-    elif atr_pct < 0.07:  adj = base_threshold + 0.2
-    else:                 adj = base_threshold
+    if   atr_pct > 0.20:  adj = base_threshold - 0.8   # Çok volatil — daha agresif
+    elif atr_pct > 0.12:  adj = base_threshold - 0.5
+    elif atr_pct < 0.04:  adj = base_threshold + 0.3   # Sıkışık
+    elif atr_pct < 0.07:  adj = base_threshold + 0.1
+    else:                 adj = base_threshold - 0.2   # Normal: biraz düşür
 
     adj = max(2.5, min(5.0, adj))
     print(f"  ATR%: {atr_pct:.4f} | Dinamik eşik: {adj:.1f}")
@@ -515,7 +515,7 @@ def score_tf(candles):
     return score
 
 TIMEFRAMES  = [("1m",100), ("5m",100), ("15m",100), ("30m",80), ("1H",80)]
-TF_WEIGHTS  = {"1m": 1.0, "5m": 2.0, "15m": 3.0, "30m": 0.5, "1H": 0.5}
+TF_WEIGHTS  = {"1m": 1.0, "5m": 2.0, "15m": 3.0, "30m": 2.0, "1H": 2.0}
 
 # ── ANALİZ ────────────────────────────────────────────────────────────
 def analyze(params):
@@ -579,10 +579,12 @@ def analyze(params):
 
     # ── HACIM KONFİRMASYONU ───────────────────────────────────────────
     candles_5m = all_candles.get("5m", [])
-    vol_ok, vol_ratio = check_volume(candles_5m, params.get("min_volume_mult", 1.2))
+    vol_ok, vol_ratio = check_volume(candles_5m, params.get("min_volume_mult", 0.7))
     print(f"  Hacim oranı: {vol_ratio:.2f}x ({'✅' if vol_ok else '❌'})")
     if not vol_ok:
-        print("  Hacim yetersiz — sinyal atlandı"); return None
+        print("  Hacim yetersiz — sinyal atlandı (gevşek filtre)")
+        # S&P 500: piyasa saatleri dışında hacim çok düşük olabilir, yine de devam
+        # return None  # Bu satırı kaldırdık, sadece log at
 
     # ── MUM PATTERN ───────────────────────────────────────────────────
     pat_score, pat_name = check_candle_pattern(candles_5m, direction)
@@ -606,8 +608,8 @@ def analyze(params):
         tp = price - tp_distance
 
     actual_rr = tp_distance / sl_distance
-    if actual_rr < params.get("rr_min", 3.0):
-        print(f"  RR {actual_rr:.2f} < {params.get('rr_min',3.0)}, atlandı"); return None
+    if actual_rr < params.get("rr_min", 2.0):
+        print(f"  RR {actual_rr:.2f} < {params.get('rr_min',2.0)}, atlandı"); return None
 
     return {
         "direction":     direction,
