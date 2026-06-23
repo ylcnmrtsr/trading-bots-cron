@@ -317,7 +317,7 @@ def save_params(p):
                     existing = item; break
         val = json.dumps(p)
         if existing:
-            requests.patch(f"{BASE_URL}/BotCache/{existing['id']}",
+            requests.put(f"{BASE_URL}/BotCache/{existing['id']}",
                            headers=HEADERS(), json={"value": val}, timeout=8)
         else:
             requests.post(f"{BASE_URL}/BotCache", headers=HEADERS(),
@@ -347,7 +347,7 @@ def set_cache(key, value):
                 if item.get("key") == key:
                     existing = item; break
         if existing:
-            requests.patch(f"{BASE_URL}/BotCache/{existing['id']}",
+            requests.put(f"{BASE_URL}/BotCache/{existing['id']}",
                            headers=HEADERS(), json={"value": value}, timeout=8)
         else:
             requests.post(f"{BASE_URL}/BotCache", headers=HEADERS(),
@@ -707,8 +707,8 @@ def create_trade(data):
     return None
 
 def update_trade(trade_id, data):
-    r = requests.patch(f"{BASE_URL}/ActiveTrade/{trade_id}",
-                       headers=HEADERS(), json=data, timeout=10)
+    r = requests.put(f"{BASE_URL}/ActiveTrade/{trade_id}",
+                     headers=HEADERS(), json=data, timeout=10)
     if r.status_code == 200: return r.json()
     print(f"  DB UPDATE error: {r.status_code} {r.text[:100]}")
     return None
