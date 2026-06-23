@@ -358,16 +358,20 @@ def set_cache(key, value):
 # ── TELEGRAM ──────────────────────────────────────────────────────────
 def send_telegram(msg):
     if not TELEGRAM_TOKEN:
-        print(f"[TELEGRAM] {msg[:100]}")
+        print(f"[TELEGRAM NO TOKEN] {msg[:100]}")
         return
     try:
-        requests.post(
+        r = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"},
             timeout=10
         )
+        if r.status_code == 200:
+            print(f"  ✅ Telegram mesaj gönderildi")
+        else:
+            print(f"  ❌ Telegram hata: {r.status_code} {r.text[:100]}")
     except Exception as e:
-        print(f"Telegram hata: {e}")
+        print(f"  ❌ Telegram exception: {e}")
 
 # ── TEKNİK İNDİKATÖRLER ───────────────────────────────────────────────
 def calc_ema(closes, period):
@@ -808,6 +812,7 @@ def run_watchdog():
 
     # ── SL KAYDIR: Breakeven ──────────────────────────────────────────
     elif not sl_be and rr_current >= 1.0:
+        print(f"  → SL Breakeven koşulu sağlandı (RR:{rr_current:.2f})")
         new_sl = entry + (sl_distance * 0.1) if direction == "LONG" \
                  else entry - (sl_distance * 0.1)
         new_sl = round(new_sl, 2)
