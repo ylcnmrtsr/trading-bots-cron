@@ -483,7 +483,7 @@ def get_dynamic_threshold(candles_15m, base_threshold=3.5):
 
 # ── TIMEFRAME SKORU ───────────────────────────────────────────────────
 def score_tf(candles):
-    if not candles or len(candles) < 50: return 0
+    if not candles or len(candles) < 20: return 0
     closes = [c["close"] for c in candles]
     score  = 0
 
@@ -534,7 +534,7 @@ def analyze(params):
         all_candles[tf_key] = candles
         print(f"  [{tf_key}] skor: {s:+d}")
 
-    if len(scores) < 3:
+    if len(scores) < 2:
         print("Yeterli timeframe verisi yok"); return None
 
     total_weight  = sum(TF_WEIGHTS[k] for k in scores)
@@ -544,6 +544,18 @@ def analyze(params):
     candles_15m    = all_candles.get("15m", [])
     dyn_threshold  = get_dynamic_threshold(candles_15m, params.get("threshold", 3.5))
     dyn_alert      = dyn_threshold - 0.5
+
+    # Piyasa saati kontrolü — kapalı saatte eşiği düşür
+    import datetime as _dt
+    _now_utc = _dt.datetime.now(_dt.timezone.utc)
+    _hour_utc = _now_utc.hour + _now_utc.minute / 60
+    # Regular saatler: 13:30-20:00 UTC  |  Pre-market: 09:00-13:30 UTC
+    _market_open = 13.5 <= _hour_utc <= 20.0
+    _premarket   = 9.0  <= _hour_utc <  13.5
+    if not _market_open and not _premarket:
+        # Futures saati ama düşük likidite — eşiği biraz düşür
+        dyn_threshold = max(dyn_threshold - 0.5, 1.5)
+        dyn_alert     = dyn_threshold - 0.4
 
     direction = None
     if   weighted_avg >=  dyn_threshold: direction = "LONG"
