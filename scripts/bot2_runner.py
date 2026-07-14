@@ -18,13 +18,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN_3", "")
 CHAT_ID = "2055780815"
 BITGET_BASE = "https://api.bitget.com/api/v2"
 BASE44_API = "https://app.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/ActiveTrade"
-BASE44_TOKEN = "d1e53ae9295b46a0bd197d93627ca7a0"  # static api_key — JWT karışıklığını önler
-
-def refresh_token():
-    global BASE44_TOKEN
-    BASE44_TOKEN = "d1e53ae9295b46a0bd197d93627ca7a0"
-    print(f"  Token OK: {BASE44_TOKEN[:8]}...")
-
+BASE44_TOKEN = os.environ.get("BASE44_API_KEY", "")
 
 PARAMS = {
     "minRR": 2.0,
@@ -34,8 +28,8 @@ PARAMS = {
     "maxOpenTrades": 3,
     "tp1Ratio": 1.8,
     "tp2Ratio": 5.0,
-    "avoidCoins": ["SKYAIUSDT", "XAUUSDT"],  # XAUUSDT sadece Bot3 yönetir
-    "minScoreThreshold": 3.5,
+    "avoidCoins": ["SKYAIUSDT", "XAUUSDT"],
+    "minScoreThreshold": 2.5,
     "leverage": 5,
 }
 
@@ -49,77 +43,32 @@ def b44_headers():
     }
 
 def get_open_trades():
-    """Bot2'ye ait açık işlemleri döndür — XAUUSDT (Bot3) hariç, 403 durumunda retry"""
-    for attempt in range(2):
-        try:
-            resp = requests.get(BASE44_API, headers=b44_headers(), params={"status": "OPEN"}, timeout=15)
-            if resp.status_code == 200:
-                trades = resp.json() if isinstance(resp.json(), list) else resp.json().get("records", [])
-                return [t for t in trades if t.get("symbol") != "XAUUSDT"]
-            elif resp.status_code == 403 and attempt == 0:
-                print(f"  get_open_trades 403 — token yenileniyor...")
-                refresh_token()
-                continue
-            else:
-                print(f"  DB GET error: {resp.status_code} {resp.text[:100]}")
-                break
-        except Exception as e:
-            print(f"  DB GET exception: {e}")
-            break
+    r = requests.get(BASE44_API, headers=b44_headers(), params={"status": "OPEN"}, timeout=15)
+    if r.status_code == 200:
+        all_open = r.json() if isinstance(r.json(), list) else r.json().get("records", [])
+        # Sadece Bot 2'nin kendi işlemlerini say (XAUUSDT ve ES hariç)
+        return [t for t in all_open if t.get("symbol") not in ("XAUUSDT", "ES")]
+    print(f"DB GET error: {r.status_code} {r.text[:100]}")
     return []
 
 def get_all_trades(limit=200):
-    for attempt in range(2):
-        try:
-            r = requests.get(BASE44_API, headers=b44_headers(), params={"limit": limit}, timeout=15)
-            if r.status_code == 200:
-                return r.json() if isinstance(r.json(), list) else r.json().get("records", [])
-            elif r.status_code == 403 and attempt == 0:
-                print("  get_all_trades 403 — token yenileniyor...")
-                refresh_token()
-                continue
-            else:
-                print(f"  get_all_trades error: {r.status_code} {r.text[:80]}")
-                break
-        except Exception as e:
-            print(f"  get_all_trades exception: {e}")
-            break
+    r = requests.get(BASE44_API, headers=b44_headers(), params={"_limit": limit}, timeout=15)
+    if r.status_code == 200:
+        return r.json() if isinstance(r.json(), list) else r.json().get("records", [])
     return []
 
 def create_trade(trade_data):
-    for attempt in range(2):
-        try:
-            resp = requests.post(BASE44_API, headers=b44_headers(), json=trade_data, timeout=15)
-            if resp.status_code in (200, 201):
-                return resp.json()
-            elif resp.status_code == 403 and attempt == 0:
-                print(f"  create_trade 403 — token yenileniyor...")
-                refresh_token()
-                continue
-            else:
-                print(f"  DB CREATE error: {resp.status_code} {resp.text[:200]}")
-                break
-        except Exception as e:
-            print(f"  create_trade exception: {e}")
-            break
+    r = requests.post(BASE44_API, headers=b44_headers(), json=trade_data, timeout=15)
+    if r.status_code in (200, 201):
+        return r.json()
+    print(f"DB CREATE error: {r.status_code} {r.text[:200]}")
     return None
 
 def update_trade(trade_id, update_data):
-    for attempt in range(2):
-        try:
-            resp = requests.put(f"{BASE44_API}/{trade_id}", headers=b44_headers(), json=update_data, timeout=15)
-            if resp.status_code == 200:
-                return resp.json()
-            elif resp.status_code == 403 and attempt == 0:
-                print(f"  update_trade 403 — token yenileniyor...")
-                refresh_token()
-                continue
-            else:
-                print(f"  DB UPDATE error: {resp.status_code} {resp.text[:200]}")
-                break
-        except Exception as e:
-            print(f"  update_trade exception: {e}")
-            break
+    r = requests.put(f"{BASE44_API}/{trade_id}", headers=b44_headers(), json=update_data, timeout=15)
+    if r.status_code == 200:
+        return r.json()
+    print(f"DB UPDATE error: {r.status_code} {r.text[:200]}")
     return None
 
 def get_blacklisted():
@@ -141,47 +90,33 @@ def get_blacklisted():
 BOTCACHE_API = "https://app.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/BotCache"
 
 def get_cache(key):
-    for attempt in range(2):
-        try:
-            r = requests.get(BOTCACHE_API, headers=b44_headers(), params={"key": key}, timeout=8)
-            if r.status_code == 200:
-                data = r.json() if isinstance(r.json(), list) else r.json().get("records", [])
-                for item in data:
-                    if item.get("key") == key:
-                        return item.get("value")
-                return None
-            elif r.status_code == 403 and attempt == 0:
-                refresh_token(); continue
-            else:
-                break
-        except: break
+    try:
+        r = requests.get(BOTCACHE_API, headers=b44_headers(), params={"key": key}, timeout=8)
+        if r.status_code == 200:
+            for item in r.json():
+                if item.get("key") == key:
+                    return item.get("value")
+    except: pass
     return None
 
 def set_cache(key, value):
-    for attempt in range(2):
-        try:
-            r = requests.get(BOTCACHE_API, headers=b44_headers(), params={"key": key}, timeout=8)
-            if r.status_code == 403 and attempt == 0:
-                refresh_token(); continue
-            existing = None
-            if r.status_code == 200:
-                data = r.json() if isinstance(r.json(), list) else r.json().get("records", [])
-                for item in data:
-                    if item.get("key") == key:
-                        existing = item; break
-            if existing:
-                requests.put(f"{BOTCACHE_API}/{existing['id']}", headers=b44_headers(),
-                             json={"key": key, "value": value}, timeout=8)
-            else:
-                requests.post(BOTCACHE_API, headers=b44_headers(),
-                              json={"key": key, "value": value}, timeout=8)
-            break
-        except Exception as e:
-            print(f"Cache set error: {e}"); break
+    try:
+        r = requests.get(BOTCACHE_API, headers=b44_headers(), params={"key": key}, timeout=8)
+        existing = None
+        if r.status_code == 200:
+            for item in r.json():
+                if item.get("key") == key:
+                    existing = item; break
+        if existing:
+            requests.patch(f"{BOTCACHE_API}/{existing['id']}", headers=b44_headers(), json={"value": value}, timeout=8)
+        else:
+            requests.post(BOTCACHE_API, headers=b44_headers(), json={"key": key, "value": value}, timeout=8)
+    except Exception as e:
+        print(f"Cache set error: {e}")
 
 # ── PER-COIN PARAMETRE DEFAULTS ───────────────────────────────────────
 COIN_PARAM_DEFAULTS = {
-    "minScoreThreshold": 3.5,
+    "minScoreThreshold": 2.5,
     "maxSlPct": 4.5,
     "wins": 0,
     "losses": 0,
@@ -288,12 +223,10 @@ def self_learn():
     """
     try:
         all_trades = get_all_trades(100)
-        avoid = set(PARAMS.get("avoidCoins", [])) | {"XAUUSDT"}
         closed = [t for t in all_trades
                   if t.get("status") in ("TP_HIT", "SL_HIT")
                   and t.get("result_pct") is not None
-                  and t.get("symbol")
-                  and t.get("symbol") not in avoid]
+                  and t.get("symbol")]
 
         if not closed:
             print("  Bot2 self-learn: hiç kapanan işlem yok")
@@ -380,7 +313,7 @@ def self_learn():
 
             # ── GENEL PARAMETRELER ──────────────────────────────────────
             if win_rate < 0.38:
-                if p["minScoreThreshold"] < 5.5:
+                if p["minScoreThreshold"] < 3.5:
                     p["minScoreThreshold"] = round(p["minScoreThreshold"] + 0.3, 1)
                     changed.append(f"score↑{p['minScoreThreshold']}")
                 if p["maxSlPct"] > 2.0:
@@ -681,7 +614,9 @@ def run_scan():
             if not c1h or not c4h:
                 continue
 
-            # Bu coin için öğrenilmiş indikatör ağırlıklarını al
+            # Bu coin için öğrenilmiş parametreleri ÖNCE yükle (ind_w dahil)
+            coin_p = get_coin_params(symbol)
+            coin_score_thresh = coin_p["minScoreThreshold"]
             ind_w = coin_p.get("ind_weights", COIN_PARAM_DEFAULTS["ind_weights"])
 
             s15, bd15 = score_tf_detailed(c15m, ind_w)
@@ -706,10 +641,6 @@ def run_scan():
                 }
             }
 
-            # Bu coin için öğrenilmiş parametreleri yükle
-            coin_p = get_coin_params(symbol)
-            coin_score_thresh = coin_p["minScoreThreshold"]
-
             # ATR dinamik eşik — coin'in kendi öğrenilmiş eşiği üzerine uygulanır
             atr_pct = calc_atr_pct(c1h)
             if atr_pct > 1.5:    dyn_thresh = coin_score_thresh - 0.4
@@ -717,22 +648,27 @@ def run_scan():
             elif atr_pct < 0.2:  dyn_thresh = coin_score_thresh + 0.5
             elif atr_pct < 0.4:  dyn_thresh = coin_score_thresh + 0.2
             else:                dyn_thresh = coin_score_thresh
-            dyn_thresh = max(2.5, min(6.5, dyn_thresh))
+            dyn_thresh = max(2.0, min(6.0, dyn_thresh))
 
             if abs(weighted) < dyn_thresh:
                 continue
 
             # Hacim konfirmasyonu (1H mumunda)
-            vol_ok, vol_ratio = check_volume(c1h, 1.3)
+            vol_ok, vol_ratio = check_volume(c1h, 1.0)
             if not vol_ok:
                 continue
+
+            is_long = weighted > 0
+            price = c1h[-1]["close"]
+
+            # OB sinyali — price tanımlandıktan sonra çağrılır
+            ob_score, bid_wall, ask_wall, wall_note = get_order_book_signal(symbol, price)
 
             # OB filtresi: karşı duvar çok güçlüyse sinyali engelle
             if (weighted > 0 and ob_score == -1) or (weighted < 0 and ob_score == 1):
                 print(f"  [{symbol}] OB karşı duvar — sinyal engellendi")
                 continue
-            is_long = weighted > 0
-            price = c1h[-1]["close"]
+
             atr = calc_atr(c1h)
             combined = c1h + c4h
             res, sup = find_sr_levels(combined)
@@ -741,7 +677,7 @@ def run_scan():
             if calc["rr"] < PARAMS["minRR"]:
                 continue
 
-            liq_tp = get_tp_from_liquidity(symbol, price_now, "LONG" if is_long else "SHORT")
+            liq_tp = get_tp_from_liquidity(symbol, price, "LONG" if is_long else "SHORT")
             results.append({
                 "symbol": symbol, "score": weighted,
                 "direction": "LONG" if is_long else "SHORT",
@@ -751,8 +687,8 @@ def run_scan():
                 "coin_score_thresh": round(coin_score_thresh, 1),
                 "entry_snapshot": entry_snapshot,
             })
-        except:
-            pass
+        except Exception as e:
+            print(f"  [{symbol}] scan error: {e}")
         time.sleep(0.05)
 
     results.sort(key=lambda x: abs(x["score"]), reverse=True)
@@ -924,59 +860,20 @@ def run_watchdog():
         elif (is_long and price <= sl) or (not is_long and price >= sl):
             pct = abs(sl - entry) / entry * 100
             lev = pct * PARAMS["leverage"]
-            # SL kâr bölgesinde mi? (Long: sl>entry | Short: sl<entry)
-            sl_in_profit = (is_long and sl > entry) or (not is_long and sl < entry)
-            # Breakeven mi? (sl == entry)
-            sl_at_be = abs(sl - entry) < 0.0001 * entry
-
-            if sl_in_profit:
-                # Kârlı kapanış
-                update_trade(trade_id, {
-                    "status": "TP_HIT",
-                    "close_time": datetime.now(timezone.utc).isoformat(),
-                    "result_pct": round(pct, 2)
-                })
-                add_to_whitelist(symbol)
-                send_telegram(
-                    f"✅ *KÂR İLE KAPANDI — {sym}*\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"{'📈 LONG' if is_long else '📉 SHORT'} SL kâr bölgesinde tetiklendi\n"
-                    f"💰 Giriş: `{entry:.6g}` → Kapanış: `{sl:.6g}`\n"
-                    f"📊 +{pct:.2f}% | 🔗 @{PARAMS['leverage']}x: +{lev:.2f}%\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                )
-                print(f"✅ KÂR SL: {sym} +{pct:.2f}%")
-            elif sl_at_be:
-                # Breakeven kapanış
-                update_trade(trade_id, {
-                    "status": "SL_HIT",
-                    "close_time": datetime.now(timezone.utc).isoformat(),
-                    "result_pct": 0.0
-                })
-                send_telegram(
-                    f"⚖️ *BREAKEVEN — {sym}*\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"{'📈 LONG' if is_long else '📉 SHORT'} başa baş kapandı\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                )
-                print(f"⚖️ BREAKEVEN: {sym}")
-            else:
-                # Gerçek zarar
-                update_trade(trade_id, {
-                    "status": "SL_HIT",
-                    "close_time": datetime.now(timezone.utc).isoformat(),
-                    "result_pct": round(-pct, 2)
-                })
-                add_to_blacklist(symbol)
-                send_telegram(
-                    f"❌ *SL HIT — {sym}*\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"{'📈 LONG' if is_long else '📉 SHORT'} stoploss!\n"
-                    f"💸 -{pct:.2f}% | 🔗 @{PARAMS['leverage']}x: -{lev:.2f}%\n"
-                    f"⛔ 48 saat blacklist'e eklendi\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                )
-                print(f"❌ SL HIT: {sym} -{pct:.2f}%")
+            update_trade(trade_id, {
+                "status": "SL_HIT",
+                "close_time": datetime.now(timezone.utc).isoformat(),
+                "result_pct": round(-pct, 2)
+            })
+            send_telegram(
+                f"❌ *SL HIT — {sym}*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"{'📈 LONG' if is_long else '📉 SHORT'} stoploss!\n"
+                f"💸 Basit: -{pct:.2f}% | 🔗 @{PARAMS['leverage']}x: -{lev:.2f}%\n"
+                f"⛔ 48 saat blacklist'e eklendi\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            print(f"❌ SL HIT: {sym}")
             continue
 
         # +1R SL Yönetimi
