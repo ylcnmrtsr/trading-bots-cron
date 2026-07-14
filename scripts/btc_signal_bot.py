@@ -16,62 +16,38 @@ CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "2055780815")
 BITGET_BASE = "https://api.bitget.com/api/v2"
 
 BASE44_CACHE_API = "https://app.base44.com/api/apps/6a1d973568af9b984e0f1cc8/entities/BotCache"
-BASE44_TOKEN = "d1e53ae9295b46a0bd197d93627ca7a0"  # static api_key — JWT karışıklığını önler
+BASE44_TOKEN = os.environ.get("BASE44_API_KEY", "")
 CACHE_KEY = "btc_signal_cache"
 
-SIGNAL_THRESHOLD = 3.0
-READY_THRESHOLD = 1.8
+SIGNAL_THRESHOLD = 2.0
+READY_THRESHOLD = 1.2
 
 # ── CACHE (Base44 DB) ─────────────────────────────────────────────────
 def b44_headers():
     return {"api_key": BASE44_TOKEN, "Content-Type": "application/json"}
 
-def refresh_token():
-    global BASE44_TOKEN
-    BASE44_TOKEN = "d1e53ae9295b46a0bd197d93627ca7a0"
-    print(f"  Token OK: {BASE44_TOKEN[:8]}...")
-
 def load_cache():
-    for attempt in range(2):
-        try:
-            resp = requests.get(BASE44_CACHE_API, headers=b44_headers(), params={"key": CACHE_KEY}, timeout=10)
-            if resp.status_code == 200:
-                records = resp.json() if isinstance(resp.json(), list) else resp.json().get("records", [])
-                if records:
-                    return json.loads(records[0]["value"]), records[0]["id"]
-                return {"last_signal": "", "last_ready": "", "last_price": 0}, None
-            elif resp.status_code == 403 and attempt == 0:
-                print(f"  load_cache 403 — token yenileniyor...")
-                refresh_token()
-                continue
-            else:
-                print(f"  Cache load error: {resp.status_code}")
-                break
-        except Exception as e:
-            print(f"  Cache load error: {e}")
-            break
+    try:
+        r = requests.get(BASE44_CACHE_API, headers=b44_headers(), params={"key": CACHE_KEY}, timeout=10)
+        if r.status_code == 200:
+            records = r.json() if isinstance(r.json(), list) else r.json().get("records", [])
+            if records:
+                return json.loads(records[0]["value"]), records[0]["id"]
+    except Exception as e:
+        print(f"Cache load error: {e}")
     return {"last_signal": "", "last_ready": "", "last_price": 0}, None
 
 def save_cache(data, record_id=None):
-    for attempt in range(2):
-        try:
-            payload = {"key": CACHE_KEY, "value": json.dumps(data)}
-            if record_id:
-                resp = requests.put(f"{BASE44_CACHE_API}/{record_id}", headers=b44_headers(), json=payload, timeout=10)
-            else:
-                resp = requests.post(BASE44_CACHE_API, headers=b44_headers(), json=payload, timeout=10)
-            if resp.status_code in (200, 201):
-                break
-            elif resp.status_code == 403 and attempt == 0:
-                print(f"  save_cache 403 — token yenileniyor...")
-                refresh_token()
-                continue
-            else:
-                print(f"  Cache save error: {resp.status_code} {resp.text[:100]}")
-                break
-        except Exception as e:
-            print(f"  Cache save error: {e}")
-            break
+    try:
+        payload = {"key": CACHE_KEY, "value": json.dumps(data)}
+        if record_id:
+            r = requests.put(f"{BASE44_CACHE_API}/{record_id}", headers=b44_headers(), json=payload, timeout=10)
+        else:
+            r = requests.post(BASE44_CACHE_API, headers=b44_headers(), json=payload, timeout=10)
+        if r.status_code not in (200, 201):
+            print(f"Cache save error: {r.status_code} {r.text[:100]}")
+    except Exception as e:
+        print(f"Cache save error: {e}")
 
 # ── TELEGRAM ──────────────────────────────────────────────────────────
 def send_telegram(msg):
@@ -162,7 +138,7 @@ def calc_atr_pct(candles, period=14):
     price = candles[-1]["close"] if candles else 0
     return (atr / price) * 100 if atr and price > 0 else 0.5
 
-def check_volume(candles, mult=1.2):
+def check_volume(candles, mult=0.8):
     """Son mumun hacmi, son 20 mum ort. mult katı mı?"""
     if len(candles) < 21:
         return True, 1.0
@@ -336,9 +312,6 @@ def main():
     ob_score, bid_wall, ask_wall, wall_note = get_order_book_signal("BTCUSDT", price)
     print(f"  OB: bid={bid_wall} ask={ask_wall} skor={ob_score} | {wall_note}")
 
-    # Likidasyon bazlı TP hedefi — direction henüz bilinmiyor, tahminle hesapla
-    liq_tp = None  # sinyal oluştuktan sonra doğru yönde doldurulacak
-
     is_long_signal  = weighted >= sig_threshold and vol_ok_1h and ob_score >= 0
     is_short_signal = weighted <= -sig_threshold and vol_ok_1h and ob_score <= 0
     is_long_ready   = rdy_threshold <= weighted < sig_threshold
@@ -350,7 +323,6 @@ def main():
     if is_long_signal or is_short_signal:
         direction_raw = "LONG" if is_long_signal else "SHORT"
         direction = "LONG 🟢" if is_long_signal else "SHORT 🔴"
-        liq_tp = get_tp_from_liquidity("BTCUSDT", price, direction_raw)
         if cache.get("last_signal") != direction_raw or price_moved:
             send_telegram(
                 f"🚨 *BTC İŞLEM SİNYALİ*\n"
