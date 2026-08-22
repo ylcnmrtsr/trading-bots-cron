@@ -1,0 +1,39 @@
+name: Bot5 NASDAQ (NQ) ICT Scanner
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # Her 5 dakikada bir
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install requests yfinance --quiet
+
+      - name: Run Bot5 Scan
+        env:
+          TELEGRAM_BOT_TOKEN_9: ${{ secrets.TELEGRAM_BOT_TOKEN_9 }}
+          BASE44_API_KEY: ${{ secrets.BASE44_API_KEY }}
+          TRADOVATE_USERNAME: ${{ secrets.TRADOVATE_USERNAME }}
+          TRADOVATE_PASSWORD: ${{ secrets.TRADOVATE_PASSWORD }}
+        run: python scripts/nasdaq_ict_bot.py scan
+
+      - name: Run Bot5 Watchdog
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN_9: ${{ secrets.TELEGRAM_BOT_TOKEN_9 }}
+          BASE44_API_KEY: ${{ secrets.BASE44_API_KEY }}
+          TRADOVATE_USERNAME: ${{ secrets.TRADOVATE_USERNAME }}
+          TRADOVATE_PASSWORD: ${{ secrets.TRADOVATE_PASSWORD }}
+        run: python scripts/nasdaq_ict_bot.py watchdog
