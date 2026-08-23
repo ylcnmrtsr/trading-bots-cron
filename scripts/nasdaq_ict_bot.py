@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """
 Bot 5 — NASDAQ (NQ) ICT Liquidity Sweep + Inverse FVG Bot
-Strateji (kaynak: ksbtrades "cheat code" reel'i, ses transkripti):
+Strateji v5 (backtest optimize — ksbtrades ICT + 2.5 ay veri):
   1. NQ'ya New York açılışında (09:30 NY) bak.
   2. Asia (20:00-00:00 NY) ve London (00:00-05:00 NY) seans high/low'larını işaretle.
-  3. İlk likidite avını (liquidity sweep) bekle — fiyat bu seviyeyi avlayıp
-     (wick) geri seviyenin içine kapanış yapmalı.
-  4. Sweep sonrası 1-5 dakikalık grafikte, sweep'e giden hareketin
-     bıraktığı FVG'nin (fair value gap) TERS ÇEVRİLMESİNİ (inverse FVG) bekle
-     — fiyat o gap'i kırıp diğer tarafa geçip kapanış yapmalı.
-  5. Giriş: inversion mumunun kapanışı. SL: sweep ekstremumu. TP: 1:2 RR.
-  6. Günde tek işlem (sinyal), Asia+London aralığı marketin AM oturumunda
-     (09:30-12:00 NY) taranır.
+  3. Likidite avını (sweep) bekle — 4 seviyeden biri süpürülür.
+  4. v5 FİLTRELER:
+     - Asia High süpürülürse → İŞLEM YAPMA (backtest: 0% win, -1.124%)
+     - Asia Low süpürülürse → İŞLEM YAPMA (backtest: 0% win, -1.435%)
+     - London High süpürülürse → NORMAL SHORT (SL: sweep extreme, backtest: 57% win, +3.171%)
+     - London Low süpürülürse → TERS SHORT (SL: London High, backtest: 57% win, +4.558%)
+  5. Giriş: inverse FVG kırılımı. TP: 1:2 RR. İşlem SL/TP olana kadar açık kalır (çoklu gün).
 
 Veri: Tradovate API (varsa) -> yfinance NQ=F fallback (Bot4/ES ile aynı desen).
 Veritabanı: Base44 ActiveTrade / BotCache entity'leri, api_key header.
@@ -361,6 +360,20 @@ def detect_inverse_fvg_entry(candles, sweep):
             return {"direction": "SHORT", "entry": entry, "sl": sl, "tp": tp, "time": c["dt"]}
     return None
 
+# ── V5: FORCED DIRECTION FVG ────────────────────────────────────────────
+def detect_fvg_forced(candles, sweep, forced_direction, sl_price):
+    """v5: Sweep seviyesine göre yönü zorla ve SL'i ayarla.
+    London High → forced SHORT, SL = sweep extreme (normal)
+    London Low → forced SHORT, SL = London High (ters)"""
+    modified_sweep = {
+        "direction": forced_direction,
+        "level": sweep["level"],
+        "extreme": sl_price,
+        "time": sweep["time"],
+        "swept_level": sweep.get("swept_level", "?")
+    }
+    return detect_inverse_fvg_entry(candles, modified_sweep)
+
 # ── SCAN ─────────────────────────────────────────────────────────────────
 def run_scan():
     print("🔍 Bot5 Scan başlıyor (NASDAQ / NQ — ICT Sweep + iFVG)...")
@@ -376,10 +389,6 @@ def run_scan():
 
     if get_open_trade():
         print("  Açık NQ işlemi var — scan atlandı."); return
-
-    today_str = now.date().isoformat()
-    if get_cache(f"bot5_traded_{today_str}"):
-        print("  Bugün için zaten sinyal üretildi."); return
 
     levels = get_session_levels()
     if not levels:
@@ -397,10 +406,28 @@ def run_scan():
     sweep = detect_sweep(candles, levels_list, None)
     if not sweep:
         print("  Henüz likidite avı (sweep) yok."); return
-    print(f"  🎯 Sweep tespit edildi → {sweep['direction']} beklentisi, "
-          f"seviye:{sweep.get('swept_level','?')} @ {sweep['level']:.2f} ekstrem:{sweep['extreme']:.2f} @{sweep['time'].strftime('%H:%M')}")
 
-    signal = detect_inverse_fvg_entry(candles, sweep)
+    swept = sweep.get("swept_level", "?")
+    print(f"  🎯 Sweep: {swept} @ {sweep['level']:.2f} (ext: {sweep['extreme']:.2f}) @{sweep['time'].strftime('%H:%M')}")
+
+    # ── v5 FİLTRELER ──
+    if swept in ("Asia High", "Asia Low"):
+        print(f"  ⏭️ {swept} süpürüldü — v5 stratejide Asia seviyeleri ATLANIR."); return
+
+    if swept == "London High":
+        forced_dir = "SHORT"
+        sl_price = sweep["extreme"]
+        strategy = "NORMAL"
+        print(f"  → London High NORMAL: SHORT | SL = sweep extreme ({sl_price:.2f})")
+    elif swept == "London Low":
+        forced_dir = "SHORT"
+        sl_price = levels["london_high"]
+        strategy = "TERS"
+        print(f"  → London Low TERS: SHORT | SL = London High ({sl_price:.2f})")
+    else:
+        print(f"  ⏭️ Bilinmeyen seviye: {swept}"); return
+
+    signal = detect_fvg_forced(candles, sweep, forced_dir, sl_price)
     if not signal:
         print("  Sweep sonrası henüz inverse FVG girişi oluşmadı — bekleniyor."); return
 
@@ -414,9 +441,10 @@ def run_scan():
         "sl_moved_breakeven": False, "sl_moved_profit": False, "tp_extended": False,
         "open_time": datetime.now(timezone.utc).isoformat(), "close_time": None, "result_pct": None,
         "notes": json.dumps({
-            "strategy": "ICT liquidity sweep + inverse FVG",
-            "swept_level": sweep.get("swept_level", "?"),
+            "strategy": f"v5: {strategy} ({swept})",
+            "swept_level": swept,
             "sweep_level": sweep["level"], "sweep_extreme": sweep["extreme"],
+            "forced_direction": forced_dir,
             "asia_high": levels["asia_high"], "asia_low": levels["asia_low"],
             "london_high": levels["london_high"], "london_low": levels["london_low"],
         })
@@ -424,8 +452,6 @@ def run_scan():
     created = create_trade(trade_data)
     if not created:
         print("  ❌ DB'ye kaydedilemedi"); return
-
-    set_cache(f"bot5_traded_{today_str}", "1")
 
     dir_str = "📈 LONG 🟢" if direction == "LONG" else "📉 SHORT 🔴"
     sl_pct = abs(entry - sl) / entry * 100
@@ -443,7 +469,7 @@ def run_scan():
         f"🇬🇧 *London* → H: `{levels['london_high']:.2f}` | L: `{levels['london_low']:.2f}`\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"⚖️ *R:R* → {rr:.1f}R\n"
-        f"🧠 Likidite Avı: {sweep.get('swept_level','?')} @ {sweep['level']:.2f} + iFVG\n"
+        f"🧠 Likidite Avı: {swept} @ {sweep['level']:.2f} [{strategy}]\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📡 *Bot 5 — NASDAQ ICT Scalper*"
     )
