@@ -246,6 +246,12 @@ def session_levels_for_today(today_ny):
         "asia_low":  min(c["low"] for c in asia),
         "london_high": max(c["high"] for c in london),
         "london_low":  min(c["low"] for c in london),
+        "levels": [
+            {"name": "Asia High", "value": max(c["high"] for c in asia), "type": "high"},
+            {"name": "Asia Low", "value": min(c["low"] for c in asia), "type": "low"},
+            {"name": "London High", "value": max(c["high"] for c in london), "type": "high"},
+            {"name": "London Low", "value": min(c["low"] for c in london), "type": "low"},
+        ],
     }
 
 def get_session_levels():
@@ -264,14 +270,21 @@ def get_session_levels():
 
 # ── ICT MANTIĞI: SWEEP + INVERSE FVG ────────────────────────────────────
 def detect_sweep(candles, session_high, session_low):
-    """Kronolojik sırayla ilk sweep'i bul (wick öteye, close geri içeride).
-    Session HIGH süpürülürse (üstü avlanır) -> beklenti aşağı dönüş -> SHORT.
-    Session LOW süpürülürse (altı avlanır)  -> beklenti yukarı dönüş -> LONG."""
+    """Asia/London H/L\'i ayri likidite seviyeleri olarak kontrol et.
+    4 seviye: Asia High, Asia Low, London High, London Low.
+    Ilk süpürülen seviyeyi döndürür."""
     for c in candles:
-        if c["high"] > session_high and c["close"] < session_high:
-            return {"direction": "SHORT", "level": session_high, "extreme": c["high"], "time": c["dt"]}
-        if c["low"] < session_low and c["close"] > session_low:
-            return {"direction": "LONG", "level": session_low, "extreme": c["low"], "time": c["dt"]}
+        # Her seviyeyi ayri ayri kontrol et (sirayla: Asia H, Asia L, London H, London L)
+        for lv in session_high if isinstance(session_high, list) else [
+            {"name": "Combined High", "value": session_high, "type": "high"},
+            {"name": "Combined Low", "value": session_low, "type": "low"}
+        ]:
+            if lv["type"] == "high" and c["high"] > lv["value"] and c["close"] < lv["value"]:
+                return {"direction": "SHORT", "level": lv["value"], "extreme": c["high"],
+                        "time": c["dt"], "swept_level": lv["name"]}
+            if lv["type"] == "low" and c["low"] < lv["value"] and c["close"] > lv["value"]:
+                return {"direction": "LONG", "level": lv["value"], "extreme": c["low"],
+                        "time": c["dt"], "swept_level": lv["name"]}
     return None
 
 def find_fvgs(candles, kind):
@@ -372,22 +385,20 @@ def run_scan():
     if not levels:
         print("  Asia/London seviyeleri hesaplanamadı."); return
 
-    session_high = max(levels["asia_high"], levels["london_high"])
-    session_low  = min(levels["asia_low"], levels["london_low"])
-    print(f"  Seviyeler → High:{session_high:.2f} Low:{session_low:.2f} "
-          f"(Asia H/L:{levels['asia_high']:.2f}/{levels['asia_low']:.2f} "
-          f"London H/L:{levels['london_high']:.2f}/{levels['london_low']:.2f})")
+    levels_list = levels["levels"]
+    print(f"  Seviyeler → Asia H/L:{levels['asia_high']:.2f}/{levels['asia_low']:.2f} "
+          f"London H/L:{levels['london_high']:.2f}/{levels['london_low']:.2f}")
 
     candles = get_candles_yfinance("1m", "1d")
     candles = [c for c in candles if c["dt"] >= session_start]
     if len(candles) < 5:
         print("  Yeterli 1m mum yok."); return
 
-    sweep = detect_sweep(candles, session_high, session_low)
+    sweep = detect_sweep(candles, levels_list, None)
     if not sweep:
         print("  Henüz likidite avı (sweep) yok."); return
     print(f"  🎯 Sweep tespit edildi → {sweep['direction']} beklentisi, "
-          f"seviye:{sweep['level']:.2f} ekstrem:{sweep['extreme']:.2f} @{sweep['time'].strftime('%H:%M')}")
+          f"seviye:{sweep.get('swept_level','?')} @ {sweep['level']:.2f} ekstrem:{sweep['extreme']:.2f} @{sweep['time'].strftime('%H:%M')}")
 
     signal = detect_inverse_fvg_entry(candles, sweep)
     if not signal:
@@ -404,6 +415,7 @@ def run_scan():
         "open_time": datetime.now(timezone.utc).isoformat(), "close_time": None, "result_pct": None,
         "notes": json.dumps({
             "strategy": "ICT liquidity sweep + inverse FVG",
+            "swept_level": sweep.get("swept_level", "?"),
             "sweep_level": sweep["level"], "sweep_extreme": sweep["extreme"],
             "asia_high": levels["asia_high"], "asia_low": levels["asia_low"],
             "london_high": levels["london_high"], "london_low": levels["london_low"],
@@ -431,7 +443,7 @@ def run_scan():
         f"🇬🇧 *London* → H: `{levels['london_high']:.2f}` | L: `{levels['london_low']:.2f}`\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"⚖️ *R:R* → {rr:.1f}R\n"
-        f"🧠 Likidite Avı ({sweep['direction']} @ {sweep['level']:.2f}) + iFVG\n"
+        f"🧠 Likidite Avı: {sweep.get('swept_level','?')} @ {sweep['level']:.2f} + iFVG\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📡 *Bot 5 — NASDAQ ICT Scalper*"
     )
