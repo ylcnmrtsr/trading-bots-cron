@@ -21,12 +21,17 @@ jobs:
           cache: "pip"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt --quiet
+        run: pip install requests --quiet
 
-      - name: Run BTC Signal Bot
-        timeout-minutes: 3
+      - name: Run Bot1 Scan
         env:
           TELEGRAM_BOT_TOKEN_2: ${{ secrets.TELEGRAM_BOT_TOKEN_2 }}
-          TELEGRAM_CHAT_ID: "2055780815"
           BASE44_API_KEY: ${{ secrets.BASE44_API_KEY }}
-        run: python scripts/btc_signal_bot.py
+        run: python scripts/btc_signal_bot.py scan
+
+      - name: Run Bot1 Watchdog
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN_2: ${{ secrets.TELEGRAM_BOT_TOKEN_2 }}
+          BASE44_API_KEY: ${{ secrets.BASE44_API_KEY }}
+        run: python scripts/btc_signal_bot.py watchdog
