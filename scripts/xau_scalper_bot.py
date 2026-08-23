@@ -1,1005 +1,454 @@
 #!/usr/bin/env python3
 """
-Bot 3 — XAU/USDT Scalper Bot v2
-- Multi-timeframe analiz: 1m, 5m, 15m, 30m (hafif), 1H (hafif)
-- Hacim konfirmasyonu (fake sinyal filtresi)
-- Mum pattern kontrolü (engulfing, pin bar, marubozu)
-- ATR dinamik eşik (volatiliteye uyarlanır)
-- Self-learning: kapanan işlemleri analiz et, parametreleri otomatik güncelle
-- Minimum 1:3 RR oranı | 100x-500x kaldıraç
+Bot 3 — XAU/USD ICT Liquidity Sweep + Inverse FVG Bot (Strateji B1)
+Backtest: 254 gun Binance verisi — 53 islem, 21 TP, 32 SL, %40 WR, +5.155% P&L, PF 1.48
+
+Strateji B1:
+  1. Asia (20:00-00:00 NY) ve London (00:00-05:00 NY) seans high/low'larini 5dk'dan hesapla.
+  2. NY acilisinda (09:30-12:00) likidite avi (sweep) bekle.
+  3. FILTRELER:
+     - Asia High/Low supurulurse → ISLEM YAPMA (atlanir)
+     - London High supurulurse → 15dk mumlarinda SHORT (SL: sweep extreme)
+     - London Low supurulurse → 5dk mumlarinda LONG (SL: sweep extreme)
+  4. Giris: inverse FVG kirilimi. TP: 1:2 RR.
+  5. Islem SL/TP olana kadar acik kalir (coklu gun).
+
+Veri: Binance Futures API (XAUUSDT).
+Veritabani: Base44 ActiveTrade / BotCache entity'leri, api_key header.
+Telegram: TELEGRAM_BOT_TOKEN_7 (@XAUmmT_bot).
 """
 
-import os, requests, time, json, math
-from datetime import datetime, timezone
+import os, sys, json, time, requests
+from datetime import datetime, timedelta, timezone, time as dtime
+from zoneinfo import ZoneInfo
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN_7", "")
 CHAT_ID        = "2055780815"
-BASE44_TOKEN   = "d1e53ae9295b46a0bd197d93627ca7a0"  # static api_key
+BASE44_TOKEN   = os.environ.get("BASE44_API_KEY", "")
 APP_ID         = "6a1d973568af9b984e0f1cc8"
 SYMBOL         = "XAUUSDT"
-BITGET_BASE    = "https://api.bitget.com"
+SYMBOL_DISPLAY = "XAU/USD (Gold)"
+RR_TARGET      = 2.0
 
-def refresh_token():
-    global BASE44_TOKEN
-    BASE44_TOKEN = "d1e53ae9295b46a0bd197d93627ca7a0"
-    print(f"  Token OK: {BASE44_TOKEN[:8]}...")
+NY = ZoneInfo("America/New_York")
+UTC = timezone.utc
 
-# ── HEADERS & BASE_URL ─────────────────────────────────────────────────
-HEADERS  = lambda: {"api_key": BASE44_TOKEN, "Content-Type": "application/json"}
+BINANCE_FAPI = "https://fapi.binance.com/fapi/v1"
+
 BASE_URL = f"https://app.base44.com/api/apps/{APP_ID}/entities"
+HEADERS  = lambda: {"api_key": BASE44_TOKEN, "Content-Type": "application/json"}
 
-# ── SELF-LEARNING PARAMETRELERİ (BotCache'den yüklenir) ───────────────
-DEFAULT_PARAMS = {
-    "threshold":       3.5,   # sinyal eşiği
-    "alert_threshold": 3.0,   # hazır ol eşiği
-    "sl_atr_mult":     1.0,   # SL = ATR * mult
-    "min_volume_mult": 1.2,   # hacim min = ort * mult
-    "rr_min":          3.0,   # minimum RR
-    "wins": 0, "losses": 0, "total_pct": 0.0,
-    "version": 1
-}
-
-def load_params():
+# ── BINANCE API ────────────────────────────────────────────────────────
+def get_price():
+    """Binance Futures'ten XAUUSDT son fiyat."""
     try:
-        r = requests.get(f"{BASE_URL}/BotCache", headers=HEADERS(),
-                         params={"key": "bot3_params"}, timeout=8)
+        r = requests.get(f"{BINANCE_FAPI}/ticker/price", params={"symbol": SYMBOL}, timeout=8)
         if r.status_code == 200:
-            for item in r.json():
-                if item.get("key") == "bot3_params":
-                    p = json.loads(item["value"])
-                    # Eksik anahtarları default ile doldur
-                    for k, v in DEFAULT_PARAMS.items():
-                        if k not in p:
-                            p[k] = v
-                    return p
-    except:
-        pass
-    return DEFAULT_PARAMS.copy()
-
-def save_params(p):
-    try:
-        r = requests.get(f"{BASE_URL}/BotCache", headers=HEADERS(),
-                         params={"key": "bot3_params"}, timeout=8)
-        existing = None
-        if r.status_code == 200:
-            for item in r.json():
-                if item.get("key") == "bot3_params":
-                    existing = item
-                    break
-        val = json.dumps(p)
-        if existing:
-            requests.put(f"{BASE_URL}/BotCache/{existing['id']}",
-                         headers=HEADERS(), json={"key": "bot3_params", "value": val}, timeout=8)
-        else:
-            requests.post(f"{BASE_URL}/BotCache", headers=HEADERS(),
-                          json={"key": "bot3_params", "value": val}, timeout=8)
+            return float(r.json()["price"])
     except Exception as e:
-        print(f"  Params save error: {e}")
+        print(f"  Fiyat hatasi: {e}")
+    return None
 
-# ── BOT CACHE (cooldown vs.) ───────────────────────────────────────────
+def get_candles(interval, limit=500):
+    """Binance Futures klines. interval: '5m', '15m'. Datetime NY-aware."""
+    try:
+        r = requests.get(f"{BINANCE_FAPI}/klines", params={
+            "symbol": SYMBOL, "interval": interval, "limit": str(limit)
+        }, timeout=10)
+        if r.status_code == 200:
+            candles = []
+            for c in r.json():
+                dt = datetime.fromtimestamp(c[0] / 1000, tz=UTC).astimezone(NY)
+                candles.append({
+                    "dt": dt,
+                    "open": float(c[1]), "high": float(c[2]),
+                    "low": float(c[3]), "close": float(c[4])
+                })
+            return candles
+    except Exception as e:
+        print(f"  Mum verisi hatasi: {e}")
+    return []
+
+# ── BASE44 CACHE / ENTITY ──────────────────────────────────────────────
 def get_cache(key):
     try:
-        r = requests.get(f"{BASE_URL}/BotCache", headers=HEADERS(),
-                         params={"key": key}, timeout=8)
+        r = requests.get(f"{BASE_URL}/BotCache", headers=HEADERS(), params={"key": key}, timeout=8)
         if r.status_code == 200:
             for item in r.json():
                 if item.get("key") == key:
                     return item.get("value")
-    except:
-        pass
+    except: pass
     return None
 
 def set_cache(key, value):
     try:
-        r = requests.get(f"{BASE_URL}/BotCache", headers=HEADERS(),
-                         params={"key": key}, timeout=8)
+        r = requests.get(f"{BASE_URL}/BotCache", headers=HEADERS(), params={"key": key}, timeout=8)
         existing = None
         if r.status_code == 200:
             for item in r.json():
                 if item.get("key") == key:
-                    existing = item
-                    break
+                    existing = item; break
         if existing:
-            requests.put(f"{BASE_URL}/BotCache/{existing['id']}",
-                         headers=HEADERS(), json={"key": key, "value": value}, timeout=8)
+            requests.put(f"{BASE_URL}/BotCache/{existing['id']}", headers=HEADERS(),
+                        json={"value": value}, timeout=8)
         else:
             requests.post(f"{BASE_URL}/BotCache", headers=HEADERS(),
-                          json={"key": key, "value": value}, timeout=8)
+                         json={"key": key, "value": value}, timeout=8)
     except Exception as e:
-        print(f"Cache set error: {e}")
+        print(f"  Cache set error: {e}")
 
-# ── BITGET API ─────────────────────────────────────────────────────────
-def get_candles(interval_str, limit=100):
-    url = f"{BITGET_BASE}/api/v2/mix/market/candles"
-    params = {"symbol": SYMBOL, "productType": "USDT-FUTURES",
-               "granularity": interval_str, "limit": str(limit)}
-    try:
-        r = requests.get(url, params=params, timeout=10)
-        data = r.json()
-        if data.get("code") != "00000":
-            return []
-        return [{"open": float(c[1]), "high": float(c[2]),
-                 "low": float(c[3]), "close": float(c[4]),
-                 "volume": float(c[5])} for c in data["data"]]
-    except Exception as e:
-        print(f"Candle error ({interval_str}): {e}")
-        return []
-
-def get_price():
-    try:
-        r = requests.get(f"{BITGET_BASE}/api/v2/mix/market/ticker",
-                         params={"symbol": SYMBOL, "productType": "USDT-FUTURES"}, timeout=8)
-        d = r.json()
-        if d.get("code") == "00000":
-            return float(d["data"][0]["lastPr"])
-    except:
-        pass
-    return None
-
-# ── TEKNİK İNDİKATÖRLER ───────────────────────────────────────────────
-def calc_ema(closes, period):
-    if len(closes) < period:
-        return closes[-1]
-    k = 2 / (period + 1)
-    ema = sum(closes[:period]) / period
-    for c in closes[period:]:
-        ema = c * k + ema * (1 - k)
-    return ema
-
-def calc_rsi(closes, period=14):
-    if len(closes) < period + 1:
-        return 50
-    gains, losses = [], []
-    for i in range(1, len(closes)):
-        d = closes[i] - closes[i-1]
-        gains.append(max(d, 0))
-        losses.append(max(-d, 0))
-    avg_g = sum(gains[-period:]) / period
-    avg_l = sum(losses[-period:]) / period
-    if avg_l == 0:
-        return 100
-    return 100 - (100 / (1 + avg_g / avg_l))
-
-def calc_atr(candles, period=14):
-    if len(candles) < period + 1:
-        return None
-    trs = []
-    for i in range(1, len(candles)):
-        h, l, pc = candles[i]["high"], candles[i]["low"], candles[i-1]["close"]
-        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
-    return sum(trs[-period:]) / period
-
-def calc_adx(candles, period=14):
-    if len(candles) < period * 2:
-        return 20
-    plus_dms, minus_dms, trs = [], [], []
-    for i in range(1, len(candles)):
-        h, l = candles[i]["high"], candles[i]["low"]
-        ph, pl, pc = candles[i-1]["high"], candles[i-1]["low"], candles[i-1]["close"]
-        plus_dms.append(max(h - ph, 0) if (h - ph) > (pl - l) else 0)
-        minus_dms.append(max(pl - l, 0) if (pl - l) > (h - ph) else 0)
-        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
-    def smooth(arr, p):
-        s = sum(arr[:p]); res = [s]
-        for v in arr[p:]: s = s - s/p + v; res.append(s)
-        return res
-    st = smooth(trs, period)
-    sp = smooth(plus_dms, period)
-    sm = smooth(minus_dms, period)
-    dx_list = []
-    for i in range(len(st)):
-        if st[i] == 0: continue
-        dip = 100 * sp[i] / st[i]
-        dim = 100 * sm[i] / st[i]
-        d = dip + dim
-        if d == 0: continue
-        dx_list.append(100 * abs(dip - dim) / d)
-    if not dx_list: return 20
-    return sum(dx_list[-period:]) / min(len(dx_list), period)
-
-# ── HAİCM KONFİRMASYONU ───────────────────────────────────────────────
-
-def get_order_book_signal(symbol, price, product_type="USDT-FUTURES", range_pct=0.003):
-    """XAU için daha dar aralık: ±0.3%"""
-    try:
-        r = requests.get(
-            "https://api.bitget.com/api/v2/mix/market/merge-depth",
-            params={"symbol": symbol, "productType": product_type, "limit": "100"},
-            timeout=5
-        )
-        if r.status_code != 200:
-            return 0, 0, 0, "OB hata"
-        d = r.json()["data"]
-        asks = [[float(x[0]), float(x[1])] for x in d["asks"]]
-        bids = [[float(x[0]), float(x[1])] for x in d["bids"]]
-        ask_wall = sum(x[1] for x in asks if x[0] <= price * (1 + range_pct))
-        bid_wall = sum(x[1] for x in bids if x[0] >= price * (1 - range_pct))
-        total = ask_wall + bid_wall
-        if total == 0:
-            return 0, 0, 0, "OB veri yok"
-        bid_ratio = bid_wall / total
-        avg_ask_vol = sum(a[1] for a in asks) / len(asks)
-        avg_bid_vol = sum(b[1] for b in bids) / len(bids)
-        ask_liq = [x[0] for x in asks if x[1] > avg_ask_vol * 3]
-        bid_liq = [x[0] for x in bids if x[1] > avg_bid_vol * 3]
-        wall_note = []
-        if ask_liq: wall_note.append(f"Satış@{ask_liq[0]:.2f}")
-        if bid_liq: wall_note.append(f"Alış@{bid_liq[0]:.2f}")
-        wall_note = " | ".join(wall_note) if wall_note else "Duvar yok"
-        ob_score = 1 if bid_ratio >= 0.60 else (-1 if bid_ratio <= 0.40 else 0)
-        return ob_score, round(bid_wall,2), round(ask_wall,2), wall_note
-    except Exception as e:
-        return 0, 0, 0, f"OB err:{e}"
-
-
-def get_tp_from_liquidity(symbol, price, direction, product_type="USDT-FUTURES"):
-    """Büyük emir duvarını TP hedefi olarak kullan"""
-    try:
-        r = requests.get(
-            "https://api.bitget.com/api/v2/mix/market/merge-depth",
-            params={"symbol": symbol, "productType": product_type, "limit": "200"},
-            timeout=5
-        )
-        if r.status_code != 200:
-            return None
-        d = r.json()["data"]
-        asks = [[float(x[0]), float(x[1])] for x in d["asks"]]
-        bids = [[float(x[0]), float(x[1])] for x in d["bids"]]
-        avg_ask = sum(a[1] for a in asks) / len(asks) if asks else 0
-        avg_bid = sum(b[1] for b in bids) / len(bids) if bids else 0
-        if direction == "LONG":
-            walls = [x[0] for x in asks if x[0] > price and x[1] > avg_ask * 2.5]
-            return min(walls) if walls else None
-        else:
-            walls = [x[0] for x in bids if x[0] < price and x[1] > avg_bid * 2.5]
-            return max(walls) if walls else None
-    except:
-        return None
-
-def check_volume(candles, mult=1.2):
-    """Son mumun hacmi, son 20 mumun ortalamasının mult katı mı?"""
-    if len(candles) < 20:
-        return True  # yeterli veri yoksa geç
-    vols = [c["volume"] for c in candles[-21:-1]]  # son 20 mum (son hariç)
-    avg_vol = sum(vols) / len(vols)
-    last_vol = candles[-1]["volume"]
-    ratio = last_vol / avg_vol if avg_vol > 0 else 1.0
-    return ratio >= mult, ratio
-
-# ── MUM PATTERN ───────────────────────────────────────────────────────
-def check_candle_pattern(candles, direction):
-    """
-    Son 2 mumda güçlü pattern var mı?
-    LONG için: bullish engulfing, bullish pin bar, marubozu
-    SHORT için: bearish engulfing, bearish pin bar, bearish marubozu
-    Puan: 0 (pattern yok) veya 1-3 (güçlü pattern)
-    """
-    if len(candles) < 3:
-        return 0, "yok"
-
-    c1 = candles[-2]   # önceki mum
-    c2 = candles[-1]   # son mum
-    score = 0
-    patterns = []
-
-    body1 = abs(c1["close"] - c1["open"])
-    body2 = abs(c2["close"] - c2["open"])
-    range1 = c1["high"] - c1["low"] if c1["high"] != c1["low"] else 0.001
-    range2 = c2["high"] - c2["low"] if c2["high"] != c2["low"] else 0.001
-
-    if direction == "LONG":
-        # Bullish engulfing: önceki kırmızı, son mum öncekini tamamen yutmuş yeşil
-        if (c1["close"] < c1["open"] and            # önceki kırmızı
-            c2["close"] > c2["open"] and            # son yeşil
-            c2["open"] <= c1["close"] and
-            c2["close"] >= c1["open"]):
-            score += 3
-            patterns.append("engulfing")
-
-        # Bullish pin bar: uzun alt gölge (en az %60 range), küçük body
-        lower_shadow = min(c2["open"], c2["close"]) - c2["low"]
-        if lower_shadow / range2 >= 0.6 and body2 / range2 <= 0.3:
-            score += 2
-            patterns.append("pin_bar")
-
-        # Bullish marubozu: güçlü yeşil mum, gölge yok
-        if (c2["close"] > c2["open"] and
-            body2 / range2 >= 0.85):
-            score += 2
-            patterns.append("marubozu")
-
-    else:  # SHORT
-        # Bearish engulfing
-        if (c1["close"] > c1["open"] and
-            c2["close"] < c2["open"] and
-            c2["open"] >= c1["close"] and
-            c2["close"] <= c1["open"]):
-            score += 3
-            patterns.append("engulfing")
-
-        # Bearish pin bar: uzun üst gölge
-        upper_shadow = c2["high"] - max(c2["open"], c2["close"])
-        if upper_shadow / range2 >= 0.6 and body2 / range2 <= 0.3:
-            score += 2
-            patterns.append("pin_bar")
-
-        # Bearish marubozu
-        if (c2["close"] < c2["open"] and
-            body2 / range2 >= 0.85):
-            score += 2
-            patterns.append("marubozu")
-
-    return score, ", ".join(patterns) if patterns else "yok"
-
-# ── ATR DİNAMİK EŞİK ──────────────────────────────────────────────────
-def get_dynamic_threshold(candles_15m, base_threshold=3.5):
-    """
-    ATR yüksekse (volatil piyasa) eşiği düşür — daha kolay sinyal.
-    ATR düşükse (sıkışık piyasa) eşiği yükselt — sahte sinyali engelle.
-    """
-    atr = calc_atr(candles_15m, 14)
-    price = candles_15m[-1]["close"] if candles_15m else 3000
-    if not atr or price == 0:
-        return base_threshold
-
-    atr_pct = (atr / price) * 100  # ATR yüzdesi
-
-    # XAU için normal ATR %: ~0.1-0.3
-    if atr_pct > 0.3:    # Çok volatil — daha kolay sinyal
-        adj = base_threshold - 0.5
-    elif atr_pct > 0.2:  # Normal-yüksek
-        adj = base_threshold - 0.2
-    elif atr_pct < 0.08: # Sıkışık — zor sinyal
-        adj = base_threshold + 0.5
-    elif atr_pct < 0.12: # Normal-düşük
-        adj = base_threshold + 0.2
-    else:
-        adj = base_threshold
-
-    adj = max(2.5, min(5.0, adj))  # 2.5-5.0 arasında tut
-    print(f"  ATR%: {atr_pct:.3f} | Dinamik eşik: {adj:.1f}")
-    return adj
-
-# ── TIMEFRAME SKORU ────────────────────────────────────────────────────
-def score_tf(candles):
-    if not candles or len(candles) < 50:
-        return 0
-    closes = [c["close"] for c in candles]
-    score  = 0
-
-    # RSI
-    rsi = calc_rsi(closes)
-    if   rsi < 30: score += 3
-    elif rsi < 40: score += 2
-    elif rsi < 45: score += 1
-    elif rsi > 70: score -= 3
-    elif rsi > 60: score -= 2
-    elif rsi > 55: score -= 1
-
-    # EMA
-    ema9  = calc_ema(closes, 9)
-    ema21 = calc_ema(closes, 21)
-    ema50 = calc_ema(closes, 50)
-    price = closes[-1]
-    if   ema9 > ema21 > ema50: score += 3
-    elif ema9 < ema21 < ema50: score -= 3
-    elif ema9 > ema21:         score += 1
-    elif ema9 < ema21:         score -= 1
-    if price > ema50: score += 1
-    else:             score -= 1
-
-    # MACD
-    macd = calc_ema(closes, 12) - calc_ema(closes, 26)
-    if macd > 0: score += 2
-    else:        score -= 2
-
-    # Momentum
-    if closes[-1] > closes[-4]: score += 1
-    else:                        score -= 1
-
-    # ADX
-    adx = calc_adx(candles)
-    if adx < 20:
-        score = score // 2
-
-    return score
-
-TIMEFRAMES = [
-    ("1m",  "1m",  100),
-    ("5m",  "5m",  100),
-    ("15m", "15m", 100),
-    ("30m", "30m", 80),
-    ("1H",  "1H",  80),
-]
-# 1m×1 + 5m×2 + 15m×3 + 30m×0.5 + 1H×0.5 = toplam 7
-TF_WEIGHTS = {"1m": 1.0, "5m": 2.0, "15m": 3.0, "30m": 0.5, "1H": 0.5}
-
-# ── ANALİZ ────────────────────────────────────────────────────────────
-def analyze(params):
-    scores = {}
-    all_candles = {}
-
-    for tf_key, tf_api, limit in TIMEFRAMES:
-        candles = get_candles(tf_api, limit)
-        if not candles:
-            print(f"  [{tf_key}] veri alınamadı")
-            continue
-        s = score_tf(candles)
-        scores[tf_key] = s
-        all_candles[tf_key] = candles
-        print(f"  [{tf_key}] skor: {s:+d}")
-
-    if len(scores) < 3:
-        print("Yeterli timeframe verisi yok")
-        return None
-
-    total_weight = sum(TF_WEIGHTS[k] for k in scores)
-    weighted_sum = sum(scores[k] * TF_WEIGHTS[k] for k in scores)
-    weighted_avg = weighted_sum / total_weight if total_weight else 0
-    print(f"  Ağırlıklı skor: {weighted_avg:.2f}")
-
-    # ATR dinamik eşik
-    candles_15m = all_candles.get("15m", [])
-    base_threshold   = params.get("threshold", 3.5)
-    base_alert       = params.get("alert_threshold", 3.0)
-    dyn_threshold    = get_dynamic_threshold(candles_15m, base_threshold)
-    dyn_alert        = dyn_threshold - 0.5
-
-    direction = None
-    if weighted_avg >= dyn_threshold:
-        direction = "LONG"
-    elif weighted_avg <= -dyn_threshold:
-        direction = "SHORT"
-    elif abs(weighted_avg) >= dyn_alert:
-        alert_dir = "LONG" if weighted_avg > 0 else "SHORT"
-        cache_key = f"bot3_alert_{alert_dir}"
-        cache_key_active = f"bot3_alert_active_{alert_dir}"
-        now_ts = int(time.time())
-
-        # Ters yönde aktif alert varsa sıfırla
-        opposite = "SHORT" if alert_dir == "LONG" else "LONG"
-        set_cache(f"bot3_alert_active_{opposite}", "0")
-
-        # Şu an alert bölgesinde miyiz?
-        is_active = get_cache(cache_key_active)
-        if is_active and is_active == "1":
-            print(f"  HAZIR OL zaten gönderildi ({alert_dir}), skor bölgeden çıkmadan tekrar atılmaz")
-            return None
-
-        # İlk kez bu bölgeye giriş → gönder ve flag'i set et
-        set_cache(cache_key_active, "1")
-        set_cache(cache_key, str(now_ts))
-        price = get_price()
-        tf_str = " | ".join([f"{k}:{v:+d}" for k, v in scores.items()])
-        msg = f"""⚠️ *XAU HAZIR OL — {alert_dir}*
-━━━━━━━━━━━━━━━━━━
-📊 Skor: `{weighted_avg:+.2f}` (eşik: ±{dyn_threshold:.1f})
-💰 Fiyat: `{price:.2f}`
-📐 TF: {tf_str}
-🔔 Sinyal eşiğine yakın, izle!
-━━━━━━━━━━━━━━━━━━
-🎯 Liq TP: Hesaplanıyor...
-━━━━━━━━━━━━━━━━━━
-📡 *Bot 3 — XAU Scalper*"""
-        send_telegram(msg)
-        print(f"  HAZIR OL: {alert_dir} skor:{weighted_avg:.2f}")
-        return None
-    else:
-        # Skor HAZIR OL bölgesinin altına düştü → flag sıfırla (tekrar girinc bildirim gelsin)
-        set_cache("bot3_alert_active_LONG", "0")
-        set_cache("bot3_alert_active_SHORT", "0")
-        return None
-
-    # ── HACIM KONFİRMASYONU ──
-    candles_5m = all_candles.get("5m", [])
-    vol_ok, vol_ratio = check_volume(candles_5m, params.get("min_volume_mult", 1.2))
-    print(f"  Hacim oranı: {vol_ratio:.2f}x (min:{params.get('min_volume_mult',1.2):.1f}x) {'✅' if vol_ok else '❌'}")
-    if not vol_ok:
-        print(f"  Hacim yetersiz — sinyal atlandı")
-        return None
-
-    # ── ORDER BOOK filtresi (scalp için kritik) ──
-    price_now = get_price()
-    ob_score, bid_wall, ask_wall, wall_note = get_order_book_signal(SYMBOL, price_now or 3000)
-    print(f"  OB: bid={bid_wall} ask={ask_wall} skor={ob_score} | {wall_note}")
-    if (direction == "LONG" and ob_score == -1) or (direction == "SHORT" and ob_score == 1):
-        print(f"  OB karşı duvar çok güçlü — sinyal engellendi")
-        return None
-
-    # ── LİKİDASYON TP OPTİMİZASYONU ──
-    liq_tp = get_tp_from_liquidity(SYMBOL, price_now or 3000, direction)
-    if liq_tp:
-        print(f"  Likidasyon TP hedefi: {liq_tp:.2f}")
-
-    # ── MUM PATTERN ──
-    pat_score, pat_name = check_candle_pattern(candles_5m, direction)
-    print(f"  Mum pattern: {pat_name} (skor:{pat_score})")
-    # Pattern ZORUNLU — yoksa sinyal geçmez
-    if pat_score == 0:
-        print(f"  Pattern yok — sinyal engellendi")
-        return None
-    # Pattern 2+ ise skoru artır (bonus)
-
-    # ── ATR bazlı SL/TP — 15m ATR kullan (5m çok dar, noise'a takılır) ──
-    atr = calc_atr(candles_15m, 14)
-    price = get_price()
-    if not atr or not price:
-        return None
-
-    sl_mult     = params.get("sl_atr_mult", 1.0)
-    sl_distance = min(atr * sl_mult, price * 0.008)
-    sl_distance = max(sl_distance, price * 0.002)
-    tp_distance = sl_distance * 3.2
-
-    if direction == "LONG":
-        sl = price - sl_distance
-        tp = price + tp_distance
-    else:
-        sl = price + sl_distance
-        tp = price - tp_distance
-
-    actual_rr = tp_distance / sl_distance
-    if actual_rr < params.get("rr_min", 3.0):
-        print(f"  RR {actual_rr:.2f} < {params.get('rr_min',3.0)}, atlandı")
-        return None
-
-    return {
-        "direction":   direction,
-        "entry_price": round(price, 4),
-        "sl":          round(sl, 4),
-        "tp":          round(tp, 4),
-        "sl_pct":      round((sl_distance / price) * 100, 3),
-        "tp_pct":      round((tp_distance / price) * 100, 3),
-        "rr":          round(actual_rr, 2),
-        "score":       round(weighted_avg, 2),
-        "tf_scores":   scores,
-        "pattern":     pat_name,
-        "pat_score":   pat_score,
-        "vol_ratio":   round(vol_ratio, 2),
-        "dyn_threshold": round(dyn_threshold, 2),
-    }
-
-# ── SELF-LEARNING ─────────────────────────────────────────────────────
-def self_learn(params):
-    """
-    Kapanan işlemleri analiz et, parametreleri otomatik güncelle.
-    Sessizce çalışır — bildirim yok.
-    """
-    try:
-        r = requests.get(
-            f"{BASE_URL}/ActiveTrade",
-            headers=HEADERS(),
-            params={"symbol": SYMBOL},
-            timeout=10
-        )
-        if r.status_code != 200:
-            return params
-
-        all_trades = [t for t in r.json()
-                      if t.get("symbol") == SYMBOL and t.get("status") != "OPEN"]
-
-        # Son 5 işlemi analiz et (daha eski geçmiş gürültü olur)
-        recent = sorted(all_trades, key=lambda x: x.get("close_time", ""), reverse=True)[:5]
-
-        if len(recent) < 3:
-            print(f"  Self-learn: yeterli geçmiş yok ({len(recent)}/3)")
-            return params
-
-        wins   = [t for t in recent if t.get("result_pct", 0) > 0]
-        losses = [t for t in recent if t.get("result_pct", 0) <= 0]
-        win_rate = len(wins) / len(recent)
-
-        total_pct = sum(t.get("result_pct", 0) for t in recent)
-        avg_pct   = total_pct / len(recent)
-
-        print(f"  Self-learn: {len(recent)} işlem | WR:{win_rate:.0%} | Ort:{avg_pct:+.2f}%")
-
-        new_params = params.copy()
-        changed    = []
-
-        # Win rate düşükse → daha seçici ol (eşiği artır, hacim filtresini sıkılaştır)
-        if win_rate < 0.4 and len(recent) >= 4:
-            if new_params["threshold"] < 4.5:
-                new_params["threshold"] = round(new_params["threshold"] + 0.2, 1)
-                changed.append(f"eşik ↑{new_params['threshold']}")
-            # min_volume_mult self-learn'den çıkarıldı — 1.2x sabit
-            pass  # hacim eşiği sabit 1.2x
-
-        # Win rate yüksekse → biraz daha agresif ol (eşiği azalt)
-        elif win_rate >= 0.7 and len(recent) >= 4:
-            if new_params["threshold"] > 2.8:
-                new_params["threshold"] = round(new_params["threshold"] - 0.1, 1)
-                changed.append(f"eşik ↓{new_params['threshold']}")
-
-        # Zarar büyükse → SL'yi sıkılaştır
-        avg_loss = sum(t.get("result_pct", 0) for t in losses) / len(losses) if losses else 0
-        if avg_loss < -0.3 and new_params["sl_atr_mult"] > 0.7:
-            new_params["sl_atr_mult"] = round(new_params["sl_atr_mult"] - 0.1, 1)
-            changed.append(f"sl_mult ↓{new_params['sl_atr_mult']}")
-
-        # İstatistikleri güncelle
-        new_params["wins"]      = params.get("wins", 0) + len(wins)
-        new_params["losses"]    = params.get("losses", 0) + len(losses)
-        new_params["total_pct"] = round(params.get("total_pct", 0) + total_pct, 2)
-        new_params["version"]   = params.get("version", 1) + (1 if changed else 0)
-        new_params["alert_threshold"] = round(new_params["threshold"] - 0.5, 1)
-
-        if changed:
-            print(f"  Self-learn güncelleme: {', '.join(changed)}")
-        else:
-            print(f"  Self-learn: parametre değişikliği yok")
-
-        save_params(new_params)
-        return new_params
-
-    except Exception as e:
-        print(f"  Self-learn hata: {e}")
-        return params
-
-# ── BASE44 CRUD ────────────────────────────────────────────────────────
 def get_open_trade():
-    """XAUUSDT'de açık işlem varsa döndür. DB'ye ulaşılamazsa 'UNKNOWN' döner — scan engellenir."""
-    for attempt in range(2):
-        try:
-            r = requests.get(f"{BASE_URL}/ActiveTrade", headers=HEADERS(),
-                             params={"status": "OPEN"}, timeout=10)
-            if r.status_code == 200:
-                data = r.json() if isinstance(r.json(), list) else r.json().get("records", [])
-                xau = [t for t in data if t.get("symbol") == SYMBOL and t.get("status") == "OPEN"]
-                return xau[0] if xau else None
-            elif r.status_code == 403 and attempt == 0:
-                print(f"  get_open_trade 403 — token yenileniyor...")
-                refresh_token()
-                continue
-            else:
-                print(f"  DB GET error: {r.status_code} {r.text[:100]}")
-                return "UNKNOWN"  # DB'ye ulaşılamıyor — scan yapma, güvenli mod
-        except Exception as e:
-            print(f"  DB GET exception: {e}")
-            return "UNKNOWN"  # Hata durumunda da scan engelle
-    return "UNKNOWN"  # Tüm denemeler başarısız
-    return None
-
-
-def create_trade(signal):
-    payload = {
-        "symbol":       SYMBOL,
-        "direction":    signal["direction"],
-        "entry_price":  signal["entry_price"],
-        "tp":           signal["tp"],
-        "sl":           signal["sl"],
-        "original_sl":  signal["sl"],
-        "rr":           signal["rr"],
-        "score":        signal["score"],
-        "status":       "OPEN",
-        "sl_moved_breakeven": False,
-        "sl_moved_profit":    False,
-        "tp_extended":        False,
-        "open_time":    datetime.now(timezone.utc).isoformat(),
-        "notes": f"Bot3 v2 | Pattern:{signal.get('pattern','yok')} | Vol:{signal.get('vol_ratio','?')}x | DynEşik:{signal.get('dyn_threshold','?')}"
-    }
     try:
-        r = requests.post(f"{BASE_URL}/ActiveTrade", headers=HEADERS(),
-                          json=payload, timeout=10)
-        if r.status_code in (200, 201):
-            return r.json().get("id")
-    except Exception as e:
-        print(f"DB CREATE error: {e}")
+        r = requests.get(f"{BASE_URL}/ActiveTrade", headers=HEADERS(),
+                         params={"symbol": SYMBOL, "status": "OPEN"}, timeout=10)
+        if r.status_code == 200:
+            trades = [t for t in r.json() if t.get("symbol") == SYMBOL and t.get("status") == "OPEN"]
+            return trades[0] if trades else None
+    except: pass
     return None
 
-def close_trade(trade_id, result, result_pct):
-    for attempt in range(2):
-        try:
-            resp = requests.put(f"{BASE_URL}/ActiveTrade/{trade_id}", headers=HEADERS(),
-                           json={"status": result, "close_time": datetime.now(timezone.utc).isoformat(),
-                                 "result_pct": round(result_pct, 2)}, timeout=10)
-            if resp.status_code in (200, 201):
-                break
-            elif resp.status_code == 403 and attempt == 0:
-                refresh_token()
-                continue
-            else:
-                print(f"  close_trade error: {resp.status_code}")
-                break
-        except Exception as e:
-            print(f"  close_trade exception: {e}")
-            break
+def create_trade(data):
+    r = requests.post(f"{BASE_URL}/ActiveTrade", headers=HEADERS(), json=data, timeout=10)
+    if r.status_code in (200, 201): return r.json()
+    print(f"  DB CREATE error: {r.status_code} {r.text[:150]}")
+    return None
 
-# ── TELEGRAM ──────────────────────────────────────────────────────────
+def update_trade(trade_id, data):
+    r = requests.put(f"{BASE_URL}/ActiveTrade/{trade_id}", headers=HEADERS(), json=data, timeout=10)
+    if r.status_code == 200: return r.json()
+    print(f"  DB UPDATE error: {r.status_code} {r.text[:150]}")
+    return None
+
+# ── TELEGRAM ────────────────────────────────────────────────────────────
 def send_telegram(msg):
     if not TELEGRAM_TOKEN:
+        print(f"[TELEGRAM NO TOKEN] {msg[:150]}")
         return
     try:
         r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
                           json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=10)
-        if r.status_code != 200:
-            print(f"Telegram error: {r.text[:100]}")
+        print("  ✅ Telegram gonderildi" if r.status_code == 200 else f"  ❌ Telegram hata: {r.status_code}")
     except Exception as e:
-        print(f"Telegram exception: {e}")
+        print(f"  ❌ Telegram exception: {e}")
 
-# ── WATCHDOG ──────────────────────────────────────────────────────────
-def watch_trade(trade):
-    """
-    Açık işlemi izler.
-    - SL veya TP değişmeden SESSIZ çalışır (spam yok)
-    - SL/TP değiştiğinde bildirim gönderir
-    - OB + Likidite verisine göre akıllı SL/TP güncelleme yapar
-    """
-    trade_id  = trade["id"]
-    direction = trade["direction"]
-    entry     = float(trade["entry_price"])
-    sl        = float(trade["sl"])
-    tp        = float(trade["tp"])
-    orig_sl   = float(trade.get("original_sl", sl))
-    rr        = trade.get("rr", 3.0)
+# ── ZAMAN / SESSION YARDIMCILARI ────────────────────────────────────────
+def ny_now():
+    return datetime.now(NY)
+
+def get_session_levels():
+    """Asia (dun 20:00 - bugun 00:00) + London (bugun 00:00 - 05:00) high/low.
+    Seviyeler 5dk mumlarindan hesaplanir. Cache'li."""
+    today = ny_now().date()
+    cached = get_cache("bot3_session_levels")
+    if cached:
+        try:
+            data = json.loads(cached)
+            if data.get("date") == today.isoformat():
+                return data
+        except: pass
+
+    # 5dk mumlar getir (2 gunluk — Asia session dunu kapsar)
+    candles = get_candles("5m", 600)
+    if not candles:
+        return None
+
+    asia_start = datetime.combine(today - timedelta(days=1), dtime(20, 0), tzinfo=NY)
+    asia_end   = datetime.combine(today, dtime(0, 0), tzinfo=NY)
+    london_start = asia_end
+    london_end   = datetime.combine(today, dtime(5, 0), tzinfo=NY)
+
+    asia   = [c for c in candles if asia_start <= c["dt"] < asia_end]
+    london = [c for c in candles if london_start <= c["dt"] < london_end]
+
+    if not asia or not london:
+        return None
+
+    levels = {
+        "date": today.isoformat(),
+        "asia_high": max(c["high"] for c in asia),
+        "asia_low": min(c["low"] for c in asia),
+        "london_high": max(c["high"] for c in london),
+        "london_low": min(c["low"] for c in london),
+    }
+    set_cache("bot3_session_levels", json.dumps(levels))
+    return levels
+
+# ── ICT MANTIĞI: SWEEP + INVERSE FVG ────────────────────────────────────
+def detect_sweep(candles, levels_list):
+    """Likidite seviyelerini kontrol et. Ilk supurulen seviyeyi dondurur."""
+    for c in candles:
+        for lv in levels_list:
+            if lv["type"] == "high" and c["high"] > lv["value"] and c["close"] < lv["value"]:
+                return {"direction": "SHORT", "level": lv["value"], "extreme": c["high"],
+                        "time": c["dt"], "swept_level": lv["name"]}
+            if lv["type"] == "low" and c["low"] < lv["value"] and c["close"] > lv["value"]:
+                return {"direction": "LONG", "level": lv["value"], "extreme": c["low"],
+                        "time": c["dt"], "swept_level": lv["name"]}
+    return None
+
+def find_fvgs(candles, kind):
+    """3 mumluk fair value gap. kind: 'bearish' veya 'bullish'."""
+    fvgs = []
+    for i in range(2, len(candles)):
+        c1, c2, c3 = candles[i - 2], candles[i - 1], candles[i]
+        if kind == "bearish":
+            if c1["low"] > c3["high"]:
+                fvgs.append({"top": c1["low"], "bottom": c3["high"], "strict": True})
+            elif c1["low"] > c3["close"] and (c1["open"] - c1["close"]) > (c3["high"] - c3["low"]) * 0.5:
+                fvgs.append({"top": c1["low"], "bottom": c3["high"], "strict": False})
+        elif kind == "bullish":
+            if c1["high"] < c3["low"]:
+                fvgs.append({"top": c3["low"], "bottom": c1["high"], "strict": True})
+            elif c1["high"] < c3["close"] and (c1["close"] - c1["open"]) > (c3["high"] - c3["low"]) * 0.5:
+                fvgs.append({"top": c3["low"], "bottom": c1["high"], "strict": False})
+    return fvgs
+
+def detect_inverse_fvg_entry(candles, sweep):
+    """Sweep sonrasi inverse FVG girisini tespit et."""
+    sweep_idx = next((i for i, c in enumerate(candles) if c["dt"] == sweep["time"]), None)
+    if sweep_idx is None:
+        return None
+    direction = sweep["direction"]
+    pre  = candles[:sweep_idx + 1]
+    post = candles[sweep_idx + 1:]
+    fvg_kind = "bearish" if direction == "LONG" else "bullish"
+    fvgs = find_fvgs(pre, fvg_kind)
+
+    # Fallback: 2 mumluk zone
+    if not fvgs and sweep_idx >= 1:
+        sc = candles[sweep_idx]
+        pc = candles[sweep_idx - 1]
+        if direction == "LONG":
+            zt = max(sc["open"], sc["close"])
+            zb = min(pc["low"], sc["low"])
+            if zt > zb: fvgs.append({"top": zt, "bottom": zb, "strict": False})
+        else:
+            zt = max(pc["high"], sc["high"])
+            zb = min(sc["open"], sc["close"])
+            if zt > zb: fvgs.append({"top": zt, "bottom": zb, "strict": False})
+
+    if not fvgs:
+        return None
+
+    best_fvg = max(fvgs, key=lambda f: f["top"] - f["bottom"])
+
+    for c in post:
+        if direction == "LONG" and c["close"] > best_fvg["top"]:
+            entry, sl = c["close"], sweep["extreme"]
+            risk = entry - sl
+            if risk <= 0: continue
+            tp = entry + risk * RR_TARGET
+            return {"direction": "LONG", "entry": entry, "sl": sl, "tp": tp, "time": c["dt"]}
+        if direction == "SHORT" and c["close"] < best_fvg["bottom"]:
+            entry, sl = c["close"], sweep["extreme"]
+            risk = sl - entry
+            if risk <= 0: continue
+            tp = entry - risk * RR_TARGET
+            return {"direction": "SHORT", "entry": entry, "sl": sl, "tp": tp, "time": c["dt"]}
+    return None
+
+# ── SCAN (STRATEJI B1) ─────────────────────────────────────────────────
+def run_scan():
+    print("🔍 Bot3 Scan basliyor (XAU/USD — ICT Strateji B1)...")
+    now = ny_now()
+
+    if now.weekday() >= 5:
+        print("  Hafta sonu — piyasa kapali."); return
+
+    session_start = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    session_end   = now.replace(hour=12, minute=0, second=0, microsecond=0)
+    if not (session_start <= now <= session_end):
+        print(f"  Aktif tarama penceresi disinda (09:30-12:00 NY). Su an: {now.strftime('%H:%M')} NY")
+        return
+
+    if get_open_trade():
+        print("  Acik XAU islemi var — scan atlandi."); return
+
+    levels = get_session_levels()
+    if not levels:
+        print("  Asia/London seviyeleri hesaplanamadi."); return
+
+    print(f"  Seviyeler → Asia H/L:{levels['asia_high']:.2f}/{levels['asia_low']:.2f} "
+          f"London H/L:{levels['london_high']:.2f}/{levels['london_low']:.2f}")
+
+    # ── Strateji B1: London High → 15dk SHORT, London Low → 5dk LONG ──
+    candles_5m  = get_candles("5m", 500)
+    candles_15m = get_candles("15m", 200)
+
+    # NY session mumlarini filtrele
+    candles_5m  = [c for c in candles_5m  if c["dt"].date() == now.date() and c["dt"] >= session_start]
+    candles_15m = [c for c in candles_15m if c["dt"].date() == now.date() and c["dt"] >= session_start]
+
+    if len(candles_5m) < 5:
+        print("  Yeterli 5dk mum yok."); return
+    if len(candles_15m) < 3:
+        print("  Yeterli 15dk mum yok."); return
+
+    # Asia H/L sweep (5dk — sadece skip icin)
+    asia_levels = [
+        {"name": "Asia High", "value": levels["asia_high"], "type": "high"},
+        {"name": "Asia Low", "value": levels["asia_low"], "type": "low"},
+    ]
+    sweep_asia = detect_sweep(candles_5m, asia_levels)
+
+    # London High sweep (15dk — SHORT islem)
+    lon_high_level = [{"name": "London High", "value": levels["london_high"], "type": "high"}]
+    sweep_lon_high = detect_sweep(candles_15m, lon_high_level)
+
+    # London Low sweep (5dk — LONG islem)
+    lon_low_level = [{"name": "London Low", "value": levels["london_low"], "type": "low"}]
+    sweep_lon_low = detect_sweep(candles_5m, lon_low_level)
+
+    # En erken sweep'i bul
+    all_sweeps = []
+    if sweep_asia: all_sweeps.append(("ASIA", sweep_asia))
+    if sweep_lon_high: all_sweeps.append(("LON_HIGH", sweep_lon_high))
+    if sweep_lon_low: all_sweeps.append(("LON_LOW", sweep_lon_low))
+
+    if not all_sweeps:
+        print("  Henuz likidite avi (sweep) yok."); return
+
+    all_sweeps.sort(key=lambda x: x[1]["time"])
+    earliest_type, earliest_sweep = all_sweeps[0]
+
+    swept = earliest_sweep.get("swept_level", "?")
+    print(f"  🎯 Ilk Sweep: {swept} @ {earliest_sweep['level']:.2f} "
+          f"(ext: {earliest_sweep['extreme']:.2f}) @{earliest_sweep['time'].strftime('%H:%M')} [{earliest_type}]")
+
+    # ── B1 FILTRELER ──
+    if earliest_type == "ASIA":
+        print(f"  ⏭️ {swept} supuruldu — Asia seviyeleri B1'de atlanir."); return
+
+    if earliest_type == "LON_HIGH":
+        # London High → 15dk mumlarinda SHORT
+        forced_dir = "SHORT"
+        sl_price = earliest_sweep["extreme"]
+        strategy = "B1: London High SHORT (15dk)"
+        entry_candles = candles_15m
+        sweep = earliest_sweep
+        print(f"  → London High: SHORT (15dk) | SL = sweep extreme ({sl_price:.2f})")
+
+    elif earliest_type == "LON_LOW":
+        # London Low → 5dk mumlarinda LONG
+        forced_dir = "LONG"
+        sl_price = earliest_sweep["extreme"]
+        strategy = "B1: London Low LONG (5dk)"
+        entry_candles = candles_5m
+        sweep = earliest_sweep
+        print(f"  → London Low: LONG (5dk) | SL = sweep extreme ({sl_price:.2f})")
+
+    else:
+        print(f"  ⏭️ Bilinmeyen: {swept}"); return
+
+    # FVG giris tespiti
+    mod_sweep = {
+        "direction": forced_dir,
+        "level": sweep["level"],
+        "extreme": sl_price,
+        "time": sweep["time"],
+        "swept_level": sweep.get("swept_level", "?")
+    }
+    signal = detect_inverse_fvg_entry(entry_candles, mod_sweep)
+    if not signal:
+        print(f"  Sweep sonrasi henuz inverse FVG girisi olusmadi — bekleniyor."); return
+
+    direction, entry, sl, tp = signal["direction"], signal["entry"], signal["sl"], signal["tp"]
+    rr = RR_TARGET
+
+    trade_data = {
+        "symbol": SYMBOL, "direction": direction, "entry_price": round(entry, 2),
+        "tp": round(tp, 2), "sl": round(sl, 2), "original_sl": round(sl, 2),
+        "rr": rr, "score": 0, "status": "OPEN",
+        "sl_moved_breakeven": False, "sl_moved_profit": False, "tp_extended": False,
+        "open_time": datetime.now(timezone.utc).isoformat(), "close_time": None, "result_pct": None,
+        "notes": json.dumps({
+            "strategy": strategy,
+            "swept_level": swept,
+            "sweep_level": sweep["level"], "sweep_extreme": sweep["extreme"],
+            "tf_used": "15m" if forced_dir == "SHORT" else "5m",
+            "asia_high": levels["asia_high"], "asia_low": levels["asia_low"],
+            "london_high": levels["london_high"], "london_low": levels["london_low"],
+        })
+    }
+    created = create_trade(trade_data)
+    if not created:
+        print("  ❌ DB'ye kaydedilemedi"); return
+
+    dir_str = "📈 LONG 🟢" if direction == "LONG" else "📉 SHORT 🔴"
+    sl_pct = abs(entry - sl) / entry * 100
+    tp_pct = abs(tp - entry) / entry * 100
+    send_telegram(
+        f"🚨 *BOT 3 — XAU/USD ICT SİNYALİ*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🪙 *{SYMBOL_DISPLAY}* | {dir_str}\n"
+        f"📍 Giriş: `{entry:.2f}`\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 *TP*: `{tp:.2f}` (+{tp_pct:.3f}%)\n"
+        f"🛡️ *SL*: `{sl:.2f}` (-{sl_pct:.3f}%)\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🌏 *Asia* → H: `{levels['asia_high']:.2f}` | L: `{levels['asia_low']:.2f}`\n"
+        f"🇬🇧 *London* → H: `{levels['london_high']:.2f}` | L: `{levels['london_low']:.2f}`\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⚖️ *R:R* → {rr:.1f}R\n"
+        f"🧠 Likidite Avı: {swept} @ {sweep['level']:.2f}\n"
+        f"📊 Zaman Dilimi: {'15dk' if forced_dir == 'SHORT' else '5dk'}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📡 *Bot 3 — XAU ICT (Strateji B1)*"
+    )
+    print(f"  ✅ Sinyal gonderildi: {direction} @ {entry:.2f} [{'15dk' if forced_dir == 'SHORT' else '5dk'}]")
+
+# ── WATCHDOG ─────────────────────────────────────────────────────────────
+def run_watchdog():
+    print("👁️ Bot3 Watchdog basliyor...")
+    trade = get_open_trade()
+    if not trade:
+        print("  Acik XAU islemi yok."); return
 
     price = get_price()
     if not price:
-        print("  Fiyat alınamadı, izleme atlandı.")
-        return
+        print("  Fiyat alinamadi."); return
 
-    pnl = (price - entry) / entry * 100 if direction == "LONG" else (entry - price) / entry * 100
-    tp_hit = (direction == "LONG" and price >= tp) or (direction == "SHORT" and price <= tp)
-    sl_hit = (direction == "LONG" and price <= sl) or (direction == "SHORT" and price >= sl)
+    trade_id  = trade["id"]
+    entry     = float(trade["entry_price"])
+    sl        = float(trade["sl"])
+    tp        = float(trade["tp"])
+    direction = trade["direction"]
+    result_pct = ((price - entry) / entry * 100) if direction == "LONG" else ((entry - price) / entry * 100)
 
-    # ── Order Book + Likidasyon verisi ────────────────────────────────────
-    ob_score, bid_wall, ask_wall, wall_note = get_order_book_signal(SYMBOL, price)
-    liq_tp = get_tp_from_liquidity(SYMBOL, price, direction)
+    print(f"  {direction} | Giris:{entry:.2f} | Simdi:{price:.2f} | SL:{sl:.2f} | TP:{tp:.2f} | Sonuc:{result_pct:+.3f}%")
 
-    # ── TP HIT ────────────────────────────────────────────────────────────
-    if tp_hit:
-        result_pct = (price - entry) / entry * 100 if direction == "LONG" else (entry - price) / entry * 100
-        levered    = result_pct * 100
-        if result_pct > 0.05:
-            label, emoji = "✅ KAR", "🟢"
-        elif result_pct >= -0.05:
-            label, emoji = "〽️ BREAKEVEN", "🟡"
-        else:
-            label, emoji = "❌ ZARAR", "🔴"
-        try:
-            close_trade(trade_id, "TP_HIT", result_pct)
-        except Exception as e:
-            print(f"  close_trade exception: {e}")
-        sl_pct_orig = abs(entry - orig_sl) / entry * 100
-        tp_pct_now  = abs(entry - tp) / entry * 100
-        send_telegram(f"""🎯 *XAU TP ULAŞTI* {emoji}
-━━━━━━━━━━━━━━━━━━
-{label} | 100x: `{levered:+.2f}%`
-📍 Fiyat: `{price:.2f}` | 💰 Giriş: `{entry:.2f}`
-🎯 TP: `{tp:.2f}` (+{tp_pct_now:.2f}%) | 🔒 SL: `{orig_sl:.2f}` (-{sl_pct_orig:.2f}%)
-📊 Ham: `{result_pct:+.2f}%` | ⚖️ RR: 1:{rr}
-━━━━━━━━━━━━━━━━━━
-📡 *Bot 3 — XAU Scalper*""")
-        print(f"  TP HIT: {direction} {result_pct:+.2f}% (100x:{levered:+.2f}%)")
-        return
+    updates, notify_msg = {}, None
 
-    # ── SL HIT ────────────────────────────────────────────────────────────
-    if sl_hit:
-        result_pct = (price - entry) / entry * 100 if direction == "LONG" else (entry - price) / entry * 100
-        levered    = result_pct * 100
-        if result_pct > 0.05:
-            label, emoji, res = "✅ KAR", "🟢", "TP_HIT"
-        elif abs(result_pct) <= 0.05:
-            label, emoji, res = "〽️ BREAKEVEN", "🟡", "BREAKEVEN"
-        else:
-            label, emoji, res = "❌ ZARAR", "🔴", "SL_HIT"
-        # close_trade ve send_telegram birbirinden bağımsız — biri hata verse diğeri çalışsın
-        try:
-            close_trade(trade_id, res, result_pct)
-        except Exception as e:
-            print(f"  close_trade exception: {e}")
-        sl_pct_now  = abs(entry - sl) / entry * 100
-        tp_pct_now  = abs(entry - tp) / entry * 100
-        orig_pct    = abs(entry - orig_sl) / entry * 100
-        sl_note = ""
-        if trade.get("sl_moved_profit"):
-            sl_note = "\n⚡ SL kâr bölgesine taşınmıştı"
-        elif trade.get("sl_moved_breakeven"):
-            sl_note = "\n⚡ SL breakeven'a taşınmıştı"
-        # Başlık sonuca göre belirleniyor
-        if result_pct > 0.05:
-            header = "✅ *XAU KAR İLE ÇIKTI*"
-        elif abs(result_pct) <= 0.05:
-            header = "〽️ *XAU BREAKEVEN ÇIKTI*"
-        else:
-            header = "🛑 *XAU SL ULAŞTI*"
-        try:
-            send_telegram(f"""{header} {emoji}
-━━━━━━━━━━━━━━━━━━
-{label} | 100x: `{levered:+.2f}%`
-📍 Fiyat: `{price:.2f}` | 💰 Giriş: `{entry:.2f}`
-🎯 TP: `{tp:.2f}` (+{tp_pct_now:.2f}%) | 🔒 SL: `{sl:.2f}` (-{sl_pct_now:.2f}%)
-📊 Ham: `{result_pct:+.2f}%` | ⚖️ RR: 1:{rr}{sl_note}
-━━━━━━━━━━━━━━━━━━
-📡 *Bot 3 — XAU Scalper*""")
-        except Exception as e:
-            print(f"  send_telegram exception: {e}")
-        print(f"  SL HIT: {direction} {result_pct:+.2f}% [{label}]")
-        return
+    hit_sl = (direction == "LONG" and price <= sl) or (direction == "SHORT" and price >= sl)
+    hit_tp = (direction == "LONG" and price >= tp) or (direction == "SHORT" and price <= tp)
 
-    # ── İŞLEM DEVAM EDİYOR — SL/TP güncelleme mantığı ────────────────────
-    print(f"  İşlem devam: {direction} | Fiyat:{price:.2f} | PnL:{pnl:+.2f}%")
+    if hit_sl:
+        updates = {"status": "SL_HIT", "close_time": datetime.now(timezone.utc).isoformat(),
+                   "result_pct": round(result_pct, 4)}
+        notify_msg = (f"🛑 *XAU/USD SL ULAŞTI*\n━━━━━━━━━━━━━━━━━━\n"
+                      f"📍 Giriş: `{entry:.2f}` | Çıkış: `{price:.2f}`\n"
+                      f"💸 Sonuç: `{result_pct:+.3f}%`\n"
+                      f"━━━━━━━━━━━━━━━━━━\n📡 *Bot 3 — XAU ICT*")
+    elif hit_tp:
+        updates = {"status": "TP_HIT", "close_time": datetime.now(timezone.utc).isoformat(),
+                   "result_pct": round(result_pct, 4)}
+        notify_msg = (f"✅ *XAU/USD TP ULAŞTI*\n━━━━━━━━━━━━━━━━━━\n"
+                      f"📍 Giriş: `{entry:.2f}` | Çıkış: `{price:.2f}`\n"
+                      f"💰 Sonuç: `{result_pct:+.3f}%`\n"
+                      f"━━━━━━━━━━━━━━━━━━\n📡 *Bot 3 — XAU ICT*")
 
-    progress    = abs(price - entry) / abs(tp - entry) if abs(tp - entry) > 0 else 0
-    update_data = {}
-    notify_parts = []  # bildirim parçaları — sadece değişiklik varsa gönderilir
+    if updates:
+        update_trade(trade_id, updates)
+        print(f"  Islem guncellendi: {updates}")
+    if notify_msg:
+        send_telegram(notify_msg)
 
-    # ── KURAL 1: Breakeven SL (ilerleme %35+) ─────────────────────────────
-    if not trade.get("sl_moved_breakeven") and progress >= 0.35:
-        new_sl_be = round(entry * 1.0002 if direction == "LONG" else entry * 0.9998, 4)
-        # OB kontrolü: breakeven taşırken likidite duvarına çarpmayalım
-        ob_ok = True
-        if direction == "LONG" and bid_wall > 0 and ask_wall > 0:
-            ob_ok = bid_wall >= ask_wall * 0.5  # alıcı tarafı çok zayıf değilse
-        elif direction == "SHORT" and bid_wall > 0 and ask_wall > 0:
-            ob_ok = ask_wall >= bid_wall * 0.5
-        if ob_ok and new_sl_be != round(sl, 4):
-            update_data["sl"]                = new_sl_be
-            update_data["sl_moved_breakeven"] = True
-            sl = new_sl_be  # sonraki kontrollerde güncel değer kullanılsın
-            notify_parts.append(
-                f"🔒 *SL → Breakeven*: `{new_sl_be:.2f}` | İlerleme: %{progress*100:.0f}"
-            )
-            print(f"  SL breakeven'a taşındı: {new_sl_be:.4f}")
-
-    # ── KURAL 2: Trailing SL — karda %55+ ilerleme ────────────────────────
-    elif trade.get("sl_moved_breakeven") and progress >= 0.55:
-        # Trailing: mevcut PnL'in %30'unu koru
-        trail_buffer = abs(price - entry) * 0.30
-        if direction == "LONG":
-            trail_sl = round(price - trail_buffer, 4)
-            if trail_sl > sl:  # sadece daha iyi bir SL'e taşı
-                # OB: güçlü bid duvarı varsa SL'i oraya yaklaştır
-                if bid_wall > ask_wall * 1.3 and liq_tp:
-                    trail_sl = round(max(trail_sl, price * 0.9985), 4)  # çok sıkıştırma
-                if round(trail_sl, 4) != round(sl, 4):
-                    update_data["sl"]              = trail_sl
-                    update_data["sl_moved_profit"] = True
-                    notify_parts.append(
-                        f"📈 *Trailing SL*: `{sl:.2f}` → `{trail_sl:.2f}` | PnL: {pnl:+.2f}%"
-                    )
-                    sl = trail_sl
-                    print(f"  Trailing SL güncellendi: {trail_sl:.4f}")
-        else:  # SHORT
-            trail_sl = round(price + trail_buffer, 4)
-            if trail_sl < sl:
-                if ask_wall > bid_wall * 1.3 and liq_tp:
-                    trail_sl = round(min(trail_sl, price * 1.0015), 4)
-                if round(trail_sl, 4) != round(sl, 4):
-                    update_data["sl"]              = trail_sl
-                    update_data["sl_moved_profit"] = True
-                    notify_parts.append(
-                        f"📉 *Trailing SL*: `{sl:.2f}` → `{trail_sl:.2f}` | PnL: {pnl:+.2f}%"
-                    )
-                    sl = trail_sl
-                    print(f"  Trailing SL güncellendi: {trail_sl:.4f}")
-
-    # ── KURAL 3: TP Uzatma — likidasyon duvarına göre ─────────────────────
-    if liq_tp and not trade.get("tp_extended") and progress >= 0.60:
-        tp_improvement = 0.0
-        if direction == "LONG" and liq_tp > tp * 1.005:   # %0.5+ daha iyi
-            tp_improvement = (liq_tp - tp) / tp * 100
-            update_data["tp"]          = round(liq_tp, 4)
-            update_data["tp_extended"] = True
-            notify_parts.append(
-                f"🚀 *TP Uzatıldı (Likidasyon)*: `{tp:.2f}` → `{liq_tp:.2f}` (+%{tp_improvement:.2f})"
-            )
-            print(f"  TP uzatıldı: {tp:.2f} → {liq_tp:.2f}")
-        elif direction == "SHORT" and liq_tp < tp * 0.995:
-            tp_improvement = (tp - liq_tp) / tp * 100
-            update_data["tp"]          = round(liq_tp, 4)
-            update_data["tp_extended"] = True
-            notify_parts.append(
-                f"🚀 *TP Uzatıldı (Likidasyon)*: `{tp:.2f}` → `{liq_tp:.2f}` (+%{tp_improvement:.2f})"
-            )
-            print(f"  TP uzatıldı: {tp:.2f} → {liq_tp:.2f}")
-
-    # ── DB'yi güncelle (değişiklik varsa) ─────────────────────────────────
-    if update_data:
-        for attempt in range(2):
-            try:
-                rp = requests.put(
-                    f"{BASE_URL}/ActiveTrade/{trade_id}",
-                    headers=HEADERS(), json=update_data, timeout=10
-                )
-                if rp.status_code in (200, 201):
-                    break
-                elif rp.status_code == 403 and attempt == 0:
-                    refresh_token()
-                    continue
-                else:
-                    print(f"  DB PATCH error: {rp.status_code}")
-                    break
-            except Exception as e:
-                print(f"  DB PATCH exception: {e}")
-                break
-
-    # ── Bildirim — SADECE SL veya TP değiştiyse ───────────────────────────
-    if notify_parts:
-        sl_pct_now = abs(entry - sl) / entry * 100
-        tp_val     = update_data.get("tp", tp)
-        tp_pct_now = abs(entry - tp_val) / entry * 100
-        ob_line    = f"📚 OB: Alış `{bid_wall:.1f}` / Satış `{ask_wall:.1f}` | {wall_note}"
-        liq_line   = f"🎯 Liq TP: `{liq_tp:.2f}`" if liq_tp else ""
-        body       = "\n".join(notify_parts)
-        send_telegram(
-            f"⚙️ *XAU İşlem Güncellendi*\n━━━━━━━━━━━━━━━━━━\n{body}\n"
-            f"📍 Fiyat: `{price:.2f}` | 💰 Giriş: `{entry:.2f}` | PnL: `{pnl:+.2f}%`\n"
-            f"🛑 SL: `{sl:.2f}` (-{sl_pct_now:.2f}%) | 🎯 TP: `{tp_val:.2f}` (+{tp_pct_now:.2f}%)\n"
-            f"{ob_line}" + (f"\n{liq_line}" if liq_line else "") +
-            f"\n━━━━━━━━━━━━━━━━━━\n📡 *Bot 3 — XAU Scalper*"
-        )
-    else:
-        # Sessiz — sadece konsola yaz, Telegram'a GÖNDERME
-        print(f"  Sessiz izleme — SL/TP değişmedi. OB:{ob_score} | Liq:{liq_tp}")
-
-# ── ANA DÖNGÜ ─────────────────────────────────────────────────────────
-def main():
-    mode = os.environ.get("BOT3_MODE", "both")
-
-    if mode == "test":
-        print("TEST MODU")
-        price = get_price()
-        params = load_params()
-        send_telegram(f"""🧪 *Bot 3 XAU Scalper v2 — TEST*
-━━━━━━━━━━━━━━━━━━
-✅ GitHub Actions çalışıyor
-✅ Telegram OK
-💰 XAU: `{price:.2f}`
-🧠 Eşik: `{params['threshold']}` | WR: {params.get('wins',0)}/{params.get('wins',0)+params.get('losses',0)}
-━━━━━━━━━━━━━━━━━━
-📡 *Bot 3 v2 — XAU Scalper*""")
-        print("Test mesajı gönderildi!")
-        return
-
-    refresh_token()
-
-    # Self-learning: her çalışmada parametreleri kontrol et
-    params = load_params()
-    print(f"  Parametreler: eşik={params['threshold']} | hacim={params['min_volume_mult']}x | sl_mult={params['sl_atr_mult']}")
-
-    # Her 10 dakikada bir self-learn çalıştır (BotCache timestamp)
-    last_learn = get_cache("bot3_last_learn")
-    now_ts = int(time.time())
-    if not last_learn or (now_ts - int(last_learn)) >= 600:
-        params = self_learn(params)
-        set_cache("bot3_last_learn", str(now_ts))
-
-    open_trade = get_open_trade()
-
-    if open_trade == "UNKNOWN":
-        print("  ⚠️ DB'ye ulaşılamıyor — scan ve watch atlanıyor (güvenli mod)")
-        return
-
-    if mode in ("watch", "both") and open_trade:
-        print(f"  Açık işlem izleniyor: {open_trade['direction']} | ID:{open_trade['id']}")
-        watch_trade(open_trade)
-
-    if mode in ("scan", "both") and not open_trade:
-        print("🔍 XAU taranıyor...")
-        signal = analyze(params)
-        if signal:
-            # Race condition önlemi: sinyal üretildikten sonra bir kez daha kontrol et
-            double_check = get_open_trade()
-            if double_check:
-                print(f"  ⚠️ Sinyal var ama işlem zaten açık (race condition engellendi): {double_check['direction']} @ {double_check['entry_price']}")
-                signal = None
-        if signal:
-            trade_id = create_trade(signal)
-            pat_info = f" | Pattern: {signal['pattern']}" if signal.get("pattern") and signal["pattern"] != "yok" else ""
-            msg = f"""🚀 *XAU SİNYAL — {signal['direction']}*
-━━━━━━━━━━━━━━━━━━
-💰 Giriş: `{signal['entry_price']:.2f}`
-🎯 TP: `{signal['tp']:.2f}` (+{signal['tp_pct']:.2f}%)
-🛑 SL: `{signal['sl']:.2f}` (-{signal['sl_pct']:.2f}%)
-⚖️ RR: 1:{signal['rr']} | 📊 Skor: `{signal['score']:+.2f}`
-📈 Hacim: `{signal['vol_ratio']:.1f}x` | 🕯 {signal['pattern']}{pat_info}
-━━━━━━━━━━━━━━━━━━
-📡 *Bot 3 v2 — XAU Scalper*"""
-            send_telegram(msg)
-            print(f"SİNYAL: {signal['direction']} @ {signal['entry_price']} | RR:{signal['rr']}")
-        else:
-            print("Sinyal bulunamadı.")
-
+# ── MAIN ─────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    main()
+    MODE = sys.argv[1] if len(sys.argv) > 1 else "scan"
+    if MODE == "scan":
+        run_scan()
+    elif MODE == "watchdog":
+        run_watchdog()
+    else:
+        print(f"Bilinmeyen mod: {MODE}")
