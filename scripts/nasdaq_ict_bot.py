@@ -417,12 +417,7 @@ def run_watchdog():
     sl        = float(trade["sl"])
     tp        = float(trade["tp"])
     direction = trade["direction"]
-    orig_sl   = float(trade.get("original_sl") or sl)
-    sl_be     = trade.get("sl_moved_breakeven", False)
-
-    sl_distance = abs(entry - orig_sl)
     result_pct  = ((price - entry) / entry * 100) if direction == "LONG" else ((entry - price) / entry * 100)
-    rr_current  = result_pct / (sl_distance / entry * 100) if sl_distance > 0 else 0
 
     print(f"  {direction} | Giriş:{entry:.2f} | Şimdi:{price:.2f} | SL:{sl:.2f} | TP:{tp:.2f} | Sonuç:{result_pct:+.3f}%")
 
@@ -432,29 +427,19 @@ def run_watchdog():
     hit_tp = (direction == "LONG" and price >= tp) or (direction == "SHORT" and price <= tp)
 
     if hit_sl:
-        label = "〽️ NASDAQ BREAKEVEN ÇIKTI" if result_pct >= -0.02 else "🛑 NASDAQ SL ULAŞTI"
         updates = {"status": "SL_HIT", "close_time": datetime.now(timezone.utc).isoformat(),
                    "result_pct": round(result_pct, 4)}
-        notify_msg = (f"{label}\n━━━━━━━━━━━━━━━━━━\n"
+        notify_msg = (f"🛑 *NASDAQ SL ULAŞTI*\n━━━━━━━━━━━━━━━━━━\n"
                       f"📍 Giriş: `{entry:.2f}` | Çıkış: `{price:.2f}`\n"
-                      f"{'💰' if result_pct >= 0 else '💸'} Sonuç: `{result_pct:+.3f}%`\n"
-                      f"━━━━━━━━━━━━━━━━━━\n📡 *Bot 5 — NASDAQ ICT Scalper*")
+                      f"💸 Sonuç: `{result_pct:+.3f}%`\n"
+                      f"━━━━━━━━━━━━━━━━━━\n📡 *Bot 5 — NASDAQ ICT*")
     elif hit_tp:
         updates = {"status": "TP_HIT", "close_time": datetime.now(timezone.utc).isoformat(),
                    "result_pct": round(result_pct, 4)}
-        notify_msg = (f"✅ NASDAQ KAR İLE ÇIKTI\n━━━━━━━━━━━━━━━━━━\n"
+        notify_msg = (f"✅ *NASDAQ TP ULAŞTI*\n━━━━━━━━━━━━━━━━━━\n"
                       f"📍 Giriş: `{entry:.2f}` | Çıkış: `{price:.2f}`\n"
                       f"💰 Sonuç: `{result_pct:+.3f}%`\n"
-                      f"━━━━━━━━━━━━━━━━━━\n📡 *Bot 5 — NASDAQ ICT Scalper*")
-    elif not sl_be and rr_current >= 1.0:
-        new_sl = entry + sl_distance * 0.1 if direction == "LONG" else entry - sl_distance * 0.1
-        new_sl = round(new_sl, 2)
-        updates = {"sl": new_sl, "sl_moved_breakeven": True}
-        notify_msg = (f"🔄 *NASDAQ SL → BREAKEVEN*\n━━━━━━━━━━━━━━━━━━\n"
-                      f"📍 Giriş: `{entry:.2f}` | Şimdi: `{price:.2f}`\n"
-                      f"🛡️ Yeni SL: `{new_sl:.2f}` (breakeven)\n"
-                      f"📈 Mevcut: `{result_pct:+.3f}%` | RR: `{rr_current:.1f}R`\n"
-                      f"━━━━━━━━━━━━━━━━━━\n📡 *Bot 5 — NASDAQ ICT Scalper*")
+                      f"━━━━━━━━━━━━━━━━━━\n📡 *Bot 5 — NASDAQ ICT*")
 
     if updates:
         update_trade(trade_id, updates)
