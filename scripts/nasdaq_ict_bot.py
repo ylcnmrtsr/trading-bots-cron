@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
 Bot 5 — NASDAQ (NQ) ICT Liquidity Sweep + Inverse FVG Bot
-Strateji v5 (backtest optimize — ksbtrades ICT + 2.5 ay veri):
+Strateji v5-HYBRID2 (backtest optimize — ksbtrades ICT + 2.5 ay veri):
   1. NQ'ya New York açılışında (09:30 NY) bak.
   2. Asia (20:00-00:00 NY) ve London (00:00-05:00 NY) seans high/low'larını işaretle.
   3. Likidite avını (sweep) bekle — 4 seviyeden biri süpürülür.
-  4. v5 FİLTRELER:
-     - Asia High süpürülürse → İŞLEM YAPMA (backtest: 0% win, -1.124%)
-     - Asia Low süpürülürse → İŞLEM YAPMA (backtest: 0% win, -1.435%)
-     - London High süpürülürse → NORMAL SHORT (SL: sweep extreme, backtest: 57% win, +3.171%)
-     - London Low süpürülürse → TERS SHORT (SL: London High, backtest: 57% win, +4.558%)
+  4. v5-HYBRID2 FİLTRELER:
+     - Asia High süpürülürse → İŞLEM YAPMA (atlanır)
+     - Asia Low süpürülürse → İŞLEM YAPMA (atlanır)
+     - London High süpürülürse → 15dk mumlarında SHORT (SL: sweep extreme, backtest: 67% win, +2.907%)
+     - London Low süpürülürse → 5dk mumlarında TERS SHORT (SL: London High, backtest: 57% win, +4.558%)
   5. Giriş: inverse FVG kırılımı. TP: 1:2 RR. İşlem SL/TP olana kadar açık kalır (çoklu gün).
+  6. Hybrid-2 backtest: 10 işlem, 6 TP, 4 SL, +7.464%, %60 win (2.5 ay).
 
 Veri: Tradovate API (varsa) -> yfinance NQ=F fallback (Bot4/ES ile aynı desen).
 Veritabanı: Base44 ActiveTrade / BotCache entity'leri, api_key header.
@@ -27,7 +28,7 @@ BASE44_TOKEN   = os.environ.get("BASE44_API_KEY", "")
 APP_ID         = "6a1d973568af9b984e0f1cc8"
 SYMBOL         = "NQ"
 SYMBOL_DISPLAY = "NASDAQ 100 (NQ)"
-RR_TARGET      = 2.0   # video: "1-2 RR" -> 2R hedef
+RR_TARGET      = 2.0
 
 NY = ZoneInfo("America/New_York")
 
@@ -136,7 +137,7 @@ def get_price_yfinance():
     return None
 
 def get_candles_yfinance(interval, period):
-    """interval: '1m'/'5m' ; period: '1d'/'2d'/'5d'. Datetime NY-aware."""
+    """interval: '5m'/'15m'/'1m' ; period: '1d'/'2d'/'5d'. Datetime NY-aware."""
     try:
         import yfinance as yf
         t = yf.Ticker("NQ=F")
@@ -223,7 +224,8 @@ def ny_now():
     return datetime.now(NY)
 
 def session_levels_for_today(today_ny):
-    """Asia (dün 20:00 - bugün 00:00) + London (bugün 00:00 - 05:00) high/low."""
+    """Asia (dun 20:00 - bugun 00:00) + London (bugun 00:00 - 05:00) high/low.
+    Seviyeler 5dk mumlarindan hesaplanir (backtest ile uyumlu)."""
     candles = get_candles_yfinance("5m", "2d")
     if not candles:
         return None
@@ -268,16 +270,10 @@ def get_session_levels():
     return levels
 
 # ── ICT MANTIĞI: SWEEP + INVERSE FVG ────────────────────────────────────
-def detect_sweep(candles, session_high, session_low):
-    """Asia/London H/L\'i ayri likidite seviyeleri olarak kontrol et.
-    4 seviye: Asia High, Asia Low, London High, London Low.
-    Ilk süpürülen seviyeyi döndürür."""
+def detect_sweep(candles, levels_list):
+    """Likidite seviyelerini kontrol et. Ilk supurulen seviyeyi dondurur."""
     for c in candles:
-        # Her seviyeyi ayri ayri kontrol et (sirayla: Asia H, Asia L, London H, London L)
-        for lv in session_high if isinstance(session_high, list) else [
-            {"name": "Combined High", "value": session_high, "type": "high"},
-            {"name": "Combined Low", "value": session_low, "type": "low"}
-        ]:
+        for lv in levels_list:
             if lv["type"] == "high" and c["high"] > lv["value"] and c["close"] < lv["value"]:
                 return {"direction": "SHORT", "level": lv["value"], "extreme": c["high"],
                         "time": c["dt"], "swept_level": lv["name"]}
@@ -287,32 +283,24 @@ def detect_sweep(candles, session_high, session_low):
     return None
 
 def find_fvgs(candles, kind):
-    """3 mumluk fair value gap. kind: 'bearish' ya da 'bullish'.
-    Hem strict FVG hem de quasi-FVG (küçük overlap'li imbalance) yakalar."""
+    """3 mumluk fair value gap. kind: 'bearish' ya da 'bullish'."""
     fvgs = []
     for i in range(2, len(candles)):
         c1, c2, c3 = candles[i - 2], candles[i - 1], candles[i]
         if kind == "bearish":
-            # Strict: c1.low > c3.high (gap)
             if c1["low"] > c3["high"]:
                 fvgs.append({"top": c1["low"], "bottom": c3["high"], "strict": True})
-            # Quasi: c1.low > c3.close ve c1.body > c3.body (imbalance)
             elif c1["low"] > c3["close"] and (c1["open"] - c1["close"]) > (c3["high"] - c3["low"]) * 0.5:
                 fvgs.append({"top": c1["low"], "bottom": c3["high"], "strict": False})
         elif kind == "bullish":
-            # Strict: c1.high < c3.low (gap)
             if c1["high"] < c3["low"]:
                 fvgs.append({"top": c3["low"], "bottom": c1["high"], "strict": True})
-            # Quasi: c1.high < c3.close ve c1.body > c3.body (imbalance)
             elif c1["high"] < c3["close"] and (c1["close"] - c1["open"]) > (c3["high"] - c3["low"]) * 0.5:
                 fvgs.append({"top": c3["low"], "bottom": c1["high"], "strict": False})
     return fvgs
 
 def detect_inverse_fvg_entry(candles, sweep):
-    """Sweep sonrasi inverse FVG girisini tespit et.
-    1) Sweep'e giden haraketin biraktigi FVG'leri bul (pre-sweep + sweep mumu)
-    2) FVG yoksa, sweep mumunun displacement zonunu kullan
-    3) Fiyat bu zone'u ters yonde kapanisla kirdiginda giris"""
+    """Sweep sonrasi inverse FVG girisini tespit et."""
     sweep_idx = next((i for i, c in enumerate(candles) if c["dt"] == sweep["time"]), None)
     if sweep_idx is None:
         return None
@@ -321,30 +309,26 @@ def detect_inverse_fvg_entry(candles, sweep):
     post = candles[sweep_idx + 1:]
     fvg_kind = "bearish" if direction == "LONG" else "bullish"
     fvgs = find_fvgs(pre, fvg_kind)
-    
-    # FVG bulunamazsa, sweep mumunun displacement zonunu kullan
+
     if not fvgs and sweep_idx >= 1:
         sweep_candle = candles[sweep_idx]
         prev_candle = candles[sweep_idx - 1]
         if direction == "LONG":
-            # Sweep low'a indi, displacement yukari. Zone: sweep mumunun body'si
             zone_top = max(sweep_candle["open"], sweep_candle["close"])
             zone_bottom = min(prev_candle["low"], sweep_candle["low"])
             if zone_top > zone_bottom:
                 fvgs.append({"top": zone_top, "bottom": zone_bottom, "strict": False})
         else:
-            # Sweep high'a cikti, displacement asagi. Zone: sweep mumunun body'si
             zone_top = max(prev_candle["high"], sweep_candle["high"])
             zone_bottom = min(sweep_candle["open"], sweep_candle["close"])
             if zone_top > zone_bottom:
                 fvgs.append({"top": zone_top, "bottom": zone_bottom, "strict": False})
-    
+
     if not fvgs:
         return None
-    
-    # En genis FVG'yi sec
+
     best_fvg = max(fvgs, key=lambda f: f["top"] - f["bottom"])
-    
+
     for c in post:
         if direction == "LONG" and c["close"] > best_fvg["top"]:
             entry, sl = c["close"], sweep["extreme"]
@@ -360,11 +344,8 @@ def detect_inverse_fvg_entry(candles, sweep):
             return {"direction": "SHORT", "entry": entry, "sl": sl, "tp": tp, "time": c["dt"]}
     return None
 
-# ── V5: FORCED DIRECTION FVG ────────────────────────────────────────────
 def detect_fvg_forced(candles, sweep, forced_direction, sl_price):
-    """v5: Sweep seviyesine göre yönü zorla ve SL'i ayarla.
-    London High → forced SHORT, SL = sweep extreme (normal)
-    London Low → forced SHORT, SL = London High (ters)"""
+    """v5: Sweep seviyesine gore yonu zorla ve SL'i ayarla."""
     modified_sweep = {
         "direction": forced_direction,
         "level": sweep["level"],
@@ -374,9 +355,9 @@ def detect_fvg_forced(candles, sweep, forced_direction, sl_price):
     }
     return detect_inverse_fvg_entry(candles, modified_sweep)
 
-# ── SCAN ─────────────────────────────────────────────────────────────────
+# ── SCAN (HYBRID-2) ─────────────────────────────────────────────────────
 def run_scan():
-    print("🔍 Bot5 Scan başlıyor (NASDAQ / NQ — ICT Sweep + iFVG)...")
+    print("🔍 Bot5 Scan başlıyor (NASDAQ / NQ — ICT Hybrid-2)...")
     now = ny_now()
 
     if now.weekday() >= 5:
@@ -398,38 +379,72 @@ def run_scan():
     print(f"  Seviyeler → Asia H/L:{levels['asia_high']:.2f}/{levels['asia_low']:.2f} "
           f"London H/L:{levels['london_high']:.2f}/{levels['london_low']:.2f}")
 
-    candles = get_candles_yfinance("1m", "1d")
-    candles = [c for c in candles if c["dt"] >= session_start]
-    if len(candles) < 5:
-        print("  Yeterli 1m mum yok."); return
+    # ── HYBRID-2: İki zaman dilimi çek ──
+    # London High → 15dk mumlarında sweep + FVG
+    # London Low  → 5dk mumlarında sweep + FVG
+    candles_5m = get_candles_yfinance("5m", "1d")
+    candles_15m = get_candles_yfinance("15m", "1d")
 
-    sweep = detect_sweep(candles, levels_list, None)
-    if not sweep:
+    candles_5m  = [c for c in candles_5m  if c["dt"] >= session_start]
+    candles_15m = [c for c in candles_15m if c["dt"] >= session_start]
+
+    if len(candles_5m) < 5 and len(candles_15m) < 3:
+        print("  Yeterli mum yok (5m/15m)."); return
+
+    # Asia High/Low sweep kontrolu (5dk uzerinde — sadece skip icin)
+    asia_levels = [lv for lv in levels_list if lv["name"] in ("Asia High", "Asia Low")]
+    sweep_asia = detect_sweep(candles_5m, asia_levels) if candles_5m else None
+
+    # London High sweep kontrolu (15dk)
+    lon_high_level = [lv for lv in levels_list if lv["name"] == "London High"]
+    sweep_lon_high_15m = detect_sweep(candles_15m, lon_high_level) if candles_15m else None
+
+    # London Low sweep kontrolu (5dk)
+    lon_low_level = [lv for lv in levels_list if lv["name"] == "London Low"]
+    sweep_lon_low_5m = detect_sweep(candles_5m, lon_low_level) if candles_5m else None
+
+    # En erken sweep'i bul
+    all_sweeps = []
+    if sweep_asia:
+        all_sweeps.append(("ASIA", sweep_asia))
+    if sweep_lon_high_15m:
+        all_sweeps.append(("LON_HIGH_15M", sweep_lon_high_15m))
+    if sweep_lon_low_5m:
+        all_sweeps.append(("LON_LOW_5M", sweep_lon_low_5m))
+
+    if not all_sweeps:
         print("  Henüz likidite avı (sweep) yok."); return
 
-    swept = sweep.get("swept_level", "?")
-    print(f"  🎯 Sweep: {swept} @ {sweep['level']:.2f} (ext: {sweep['extreme']:.2f}) @{sweep['time'].strftime('%H:%M')}")
+    all_sweeps.sort(key=lambda x: x[1]["time"])
+    earliest_type, earliest_sweep = all_sweeps[0]
 
-    # ── v5 FİLTRELER ──
-    if swept in ("Asia High", "Asia Low"):
-        print(f"  ⏭️ {swept} süpürüldü — v5 stratejide Asia seviyeleri ATLANIR."); return
+    swept = earliest_sweep.get("swept_level", "?")
+    print(f"  🎯 İlk Sweep: {swept} @ {earliest_sweep['level']:.2f} (ext: {earliest_sweep['extreme']:.2f}) @{earliest_sweep['time'].strftime('%H:%M')} [{earliest_type}]")
 
-    if swept == "London High":
+    # ── v5-HYBRID2 FİLTRELER ──
+    if earliest_type == "ASIA":
+        print(f"  ⏭️ {swept} süpürüldü — v5 Hybrid-2'de Asia seviyeleri ATLANIR."); return
+
+    if earliest_type == "LON_HIGH_15M":
         forced_dir = "SHORT"
-        sl_price = sweep["extreme"]
-        strategy = "NORMAL"
-        print(f"  → London High NORMAL: SHORT | SL = sweep extreme ({sl_price:.2f})")
-    elif swept == "London Low":
+        sl_price = earliest_sweep["extreme"]
+        strategy = "NORMAL (15dk)"
+        entry_candles = candles_15m
+        sweep = earliest_sweep
+        print(f"  → London High NORMAL: SHORT (15dk) | SL = sweep extreme ({sl_price:.2f})")
+    elif earliest_type == "LON_LOW_5M":
         forced_dir = "SHORT"
         sl_price = levels["london_high"]
-        strategy = "TERS"
-        print(f"  → London Low TERS: SHORT | SL = London High ({sl_price:.2f})")
+        strategy = "TERS (5dk)"
+        entry_candles = candles_5m
+        sweep = earliest_sweep
+        print(f"  → London Low TERS: SHORT (5dk) | SL = London High ({sl_price:.2f})")
     else:
         print(f"  ⏭️ Bilinmeyen seviye: {swept}"); return
 
-    signal = detect_fvg_forced(candles, sweep, forced_dir, sl_price)
+    signal = detect_fvg_forced(entry_candles, sweep, forced_dir, sl_price)
     if not signal:
-        print("  Sweep sonrası henüz inverse FVG girişi oluşmadı — bekleniyor."); return
+        print(f"  Sweep sonrası henüz inverse FVG girişi oluşmadı — bekleniyor ({strategy})."); return
 
     direction, entry, sl, tp = signal["direction"], signal["entry"], signal["sl"], signal["tp"]
     rr = RR_TARGET
@@ -441,10 +456,11 @@ def run_scan():
         "sl_moved_breakeven": False, "sl_moved_profit": False, "tp_extended": False,
         "open_time": datetime.now(timezone.utc).isoformat(), "close_time": None, "result_pct": None,
         "notes": json.dumps({
-            "strategy": f"v5: {strategy} ({swept})",
+            "strategy": f"v5-Hybrid2: {strategy} ({swept})",
             "swept_level": swept,
             "sweep_level": sweep["level"], "sweep_extreme": sweep["extreme"],
             "forced_direction": forced_dir,
+            "tf_used": "15m" if "15dk" in strategy else "5m",
             "asia_high": levels["asia_high"], "asia_low": levels["asia_low"],
             "london_high": levels["london_high"], "london_low": levels["london_low"],
         })
@@ -456,6 +472,7 @@ def run_scan():
     dir_str = "📈 LONG 🟢" if direction == "LONG" else "📉 SHORT 🔴"
     sl_pct = abs(entry - sl) / entry * 100
     tp_pct = abs(tp - entry) / entry * 100
+    tf_label = "15dk" if "15dk" in strategy else "5dk"
     send_telegram(
         f"🚨 *BOT 5 — NASDAQ (NQ) ICT SİNYALİ*\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -470,10 +487,11 @@ def run_scan():
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"⚖️ *R:R* → {rr:.1f}R\n"
         f"🧠 Likidite Avı: {swept} @ {sweep['level']:.2f} [{strategy}]\n"
+        f"📊 Zaman Dilimi: {tf_label}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📡 *Bot 5 — NASDAQ ICT Scalper*"
+        f"📡 *Bot 5 — NASDAQ ICT Scalper (Hybrid-2)*"
     )
-    print(f"  ✅ Sinyal gönderildi: {direction} @ {entry:.2f}")
+    print(f"  ✅ Sinyal gönderildi: {direction} @ {entry:.2f} [{tf_label}]")
 
 # ── WATCHDOG ─────────────────────────────────────────────────────────────
 def run_watchdog():
