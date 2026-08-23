@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """
-Bot 1 — BTC/USD ICT Liquidity Sweep + Inverse FVG Bot (Strateji F)
-Backtest: 3 yil Binance verisi — 196 islem, 66 TP, 130 SL, %34 WR, +5.36% P&L, PF 1.14
+Bot 1 — BTC/USD PDH/PDL Liquidity Sweep + Inverse FVG Bot (Strateji D)
+Backtest: 3 yil Binance verisi — 246 islem, %37-49 WR, +29-121% P&L (cikis zaman dilimine gore)
 
-Strateji F:
-  1. Asia (20:00-00:00 NY) ve London (00:00-05:00 NY) seans high/low'larini 5dk'dan hesapla.
-  2. NY acilisinda (09:30-12:00) likidite avi (sweep) bekle.
+Strateji D (Previous Day Low Liquidity Sweep):
+  1. Onceki gunun daily high/low'larini hesapla (5dk mumlarindan).
+  2. Tum gun boyunca (24 saat) likidite avi (sweep) bekle — NY saati bekleme yok.
   3. FILTRELER:
-     - Asia High/Low supurulurse → ISLEM YAPMA (atlanir)
-     - London High supurulurse → 5dk mumlarinda SHORT (SL: sweep extreme)
-     - London Low supurulurse → 5dk mumlarinda SHORT (SL: sweep extreme)
-     (BTC'de her iki seviye supurulunce SHORT — 3 yillik backtest'te en iyi sonuc)
+     - Previous Day High (PDH) supurulurse → ISLEM YAPMA (atlanir)
+     - Previous Day Low (PDL) supurulurse → 5dk mumlarinda LONG (SL: sweep extreme)
   4. Giris: inverse FVG kirilimi. TP: 1:2 RR.
   5. Islem SL/TP olana kadar acik kalir (coklu gun).
+
+Neden PDL→LONG?
+  - BTC fundamental olarak yukselis trendinde → dip alimi mantigi
+  - PDH sweep SHORT 3 yilda neredeyse break-even (-1.79%)
+  - PDL sweep LONG 3 yilda +29% (5dk cikis) / +121% (1dk cikis)
+  - 6 aylik testte tek pozitif strateji (+1.90%)
 
 Veri: Binance Futures API (BTCUSDT).
 Veritabani: Base44 ActiveTrade / BotCache entity'leri, api_key header.
@@ -124,54 +128,62 @@ def send_telegram(msg):
     except Exception as e:
         print(f"  ❌ Telegram exception: {e}")
 
-# ── ZAMAN / SESSION YARDIMCILARI ────────────────────────────────────────
+# ── ZAMAN / PREVIOUS DAY HIGH/LOW ───────────────────────────────────────
 def ny_now():
     return datetime.now(NY)
 
-def get_session_levels():
+def get_pdh_pdl():
+    """Onceki gunun daily high/low'larini hesapla (NY gunu baz alinir).
+    Cache'li — gun basinda bir kere hesaplanir."""
     today = ny_now().date()
-    cached = get_cache("bot1_session_levels")
+    cached = get_cache("bot1_pdh_pdl")
     if cached:
         try:
             data = json.loads(cached)
             if data.get("date") == today.isoformat(): return data
         except: pass
 
+    # 5dk mumlar getir (2 gunluk — onceki gunu kapsar)
     candles = get_candles("5m", 600)
     if not candles: return None
 
-    asia_start = datetime.combine(today - timedelta(days=1), dtime(20, 0), tzinfo=NY)
-    asia_end   = datetime.combine(today, dtime(0, 0), tzinfo=NY)
-    london_start = asia_end
-    london_end   = datetime.combine(today, dtime(5, 0), tzinfo=NY)
+    prev_day = today - timedelta(days=1)
+    prev_start = datetime.combine(prev_day, dtime(0, 0), tzinfo=NY)
+    prev_end   = datetime.combine(today, dtime(0, 0), tzinfo=NY)
 
-    asia   = [c for c in candles if asia_start <= c["dt"] < asia_end]
-    london = [c for c in candles if london_start <= c["dt"] < london_end]
-    if not asia or not london: return None
+    prev_candles = [c for c in candles if prev_start <= c["dt"] < prev_end]
+    if not prev_candles:
+        return None
 
     levels = {
         "date": today.isoformat(),
-        "asia_high": max(c["high"] for c in asia),
-        "asia_low": min(c["low"] for c in asia),
-        "london_high": max(c["high"] for c in london),
-        "london_low": min(c["low"] for c in london),
+        "pdh": max(c["high"] for c in prev_candles),
+        "pdl": min(c["low"] for c in prev_candles),
     }
-    set_cache("bot1_session_levels", json.dumps(levels))
+    set_cache("bot1_pdh_pdl", json.dumps(levels))
     return levels
 
 # ── ICT MANTIĞI: SWEEP + INVERSE FVG ────────────────────────────────────
-def detect_sweep(candles, levels_list):
+def detect_pdl_sweep(candles, pdl):
+    """PDL (Previous Day Low) supurulmus mu?
+    Low < PDL ve close > PDL → likidite alindi, LONG sinyali."""
     for c in candles:
-        for lv in levels_list:
-            if lv["type"] == "high" and c["high"] > lv["value"] and c["close"] < lv["value"]:
-                return {"direction": "SHORT", "level": lv["value"], "extreme": c["high"],
-                        "time": c["dt"], "swept_level": lv["name"]}
-            if lv["type"] == "low" and c["low"] < lv["value"] and c["close"] > lv["value"]:
-                return {"direction": "LONG", "level": lv["value"], "extreme": c["low"],
-                        "time": c["dt"], "swept_level": lv["name"]}
+        if c["low"] < pdl and c["close"] > pdl:
+            return {"direction": "LONG", "level": pdl, "extreme": c["low"],
+                    "time": c["dt"], "swept_level": "PDL"}
+    return None
+
+def detect_pdh_sweep(candles, pdh):
+    """PDH (Previous Day High) supurulmus mu?
+    High > PDH ve close < PDH → likidite alindi, SHORT sinyali."""
+    for c in candles:
+        if c["high"] > pdh and c["close"] < pdh:
+            return {"direction": "SHORT", "level": pdh, "extreme": c["high"],
+                    "time": c["dt"], "swept_level": "PDH"}
     return None
 
 def find_fvgs(candles, kind):
+    """3 mumluk fair value gap. kind: 'bearish' veya 'bullish'."""
     fvgs = []
     for i in range(2, len(candles)):
         c1, c2, c3 = candles[i - 2], candles[i - 1], candles[i]
@@ -188,6 +200,7 @@ def find_fvgs(candles, kind):
     return fvgs
 
 def detect_inverse_fvg_entry(candles, sweep):
+    """Sweep sonrasi inverse FVG girisini tespit et."""
     sweep_idx = next((i for i, c in enumerate(candles) if c["dt"] == sweep["time"]), None)
     if sweep_idx is None: return None
     direction = sweep["direction"]
@@ -196,13 +209,17 @@ def detect_inverse_fvg_entry(candles, sweep):
     fvg_kind = "bearish" if direction == "LONG" else "bullish"
     fvgs = find_fvgs(pre, fvg_kind)
 
+    # Fallback: 2 mumluk zone
     if not fvgs and sweep_idx >= 1:
-        sc = candles[sweep_idx]; pc = candles[sweep_idx - 1]
+        sc = candles[sweep_idx]
+        pc = candles[sweep_idx - 1]
         if direction == "LONG":
-            zt = max(sc["open"], sc["close"]); zb = min(pc["low"], sc["low"])
+            zt = max(sc["open"], sc["close"])
+            zb = min(pc["low"], sc["low"])
             if zt > zb: fvgs.append({"top": zt, "bottom": zb, "strict": False})
         else:
-            zt = max(pc["high"], sc["high"]); zb = min(sc["open"], sc["close"])
+            zt = max(pc["high"], sc["high"])
+            zb = min(sc["open"], sc["close"])
             if zt > zb: fvgs.append({"top": zt, "bottom": zb, "strict": False})
 
     if not fvgs: return None
@@ -223,89 +240,50 @@ def detect_inverse_fvg_entry(candles, sweep):
             return {"direction": "SHORT", "entry": entry, "sl": sl, "tp": tp, "time": c["dt"]}
     return None
 
-# ── SCAN (STRATEJI F) ─────────────────────────────────────────────────
+# ── SCAN (STRATEJI D: PDL → LONG) ─────────────────────────────────────
 def run_scan():
-    print("🔍 Bot1 Scan basliyor (BTC/USD — ICT Strateji F)...")
+    print("🔍 Bot1 Scan basliyor (BTC/USD — PDH/PDL Strateji D)...")
     now = ny_now()
-
-    # BTC 7/24 isler, ama NY session penceresinde tara
-    session_start = now.replace(hour=9, minute=30, second=0, microsecond=0)
-    session_end   = now.replace(hour=12, minute=0, second=0, microsecond=0)
-    if not (session_start <= now <= session_end):
-        print(f"  Aktif tarama penceresi disinda (09:30-12:00 NY). Su an: {now.strftime('%H:%M')} NY")
-        return
 
     if get_open_trade():
         print("  Acik BTC islemi var — scan atlandi."); return
 
-    levels = get_session_levels()
+    levels = get_pdh_pdl()
     if not levels:
-        print("  Asia/London seviyeleri hesaplanamadi."); return
+        print("  Onceki gun PDH/PDL hesaplanamadi."); return
 
-    print(f"  Seviyeler → Asia H/L:{levels['asia_high']:.2f}/{levels['asia_low']:.2f} "
-          f"London H/L:{levels['london_high']:.2f}/{levels['london_low']:.2f}")
+    pdh = levels["pdh"]
+    pdl = levels["pdl"]
+    print(f"  PDH: {pdh:.2f} | PDL: {pdl:.2f} | Bugun: {now.strftime('%Y-%m-%d %H:%M')} NY")
 
-    # ── Strateji F: London High → 5dk SHORT, London Low → 5dk SHORT ──
+    # 5dk mumlar getir (bugunun tum mumlari)
     candles_5m = get_candles("5m", 500)
-    candles_5m = [c for c in candles_5m if c["dt"].date() == now.date() and c["dt"] >= session_start]
+    candles_5m = [c for c in candles_5m if c["dt"].date() == now.date()]
     if len(candles_5m) < 5:
         print("  Yeterli 5dk mum yok."); return
 
-    # Asia H/L sweep (skip icin)
-    asia_levels = [
-        {"name": "Asia High", "value": levels["asia_high"], "type": "high"},
-        {"name": "Asia Low", "value": levels["asia_low"], "type": "low"},
-    ]
-    sweep_asia = detect_sweep(candles_5m, asia_levels)
+    # ── Strateji D: Sadece PDL sweep → LONG ──
+    # PDH sweep'i kontrol et (atlanir)
+    pdh_sweep = detect_pdh_sweep(candles_5m, pdh)
+    if pdh_sweep:
+        print(f"  ⏭️ PDH supuruldu ({pdh:.2f}) — D stratejisinde atlanir.")
+        return
 
-    # London High sweep (5dk — SHORT)
-    lon_high_level = [{"name": "London High", "value": levels["london_high"], "type": "high"}]
-    sweep_lon_high = detect_sweep(candles_5m, lon_high_level)
+    # PDL sweep'i kontrol et
+    pdl_sweep = detect_pdl_sweep(candles_5m, pdl)
+    if not pdl_sweep:
+        print("  Henuz PDL (Previous Day Low) supurulmedi — bekleniyor.")
+        return
 
-    # London Low sweep (5dk — SHORT, F stratejisi)
-    lon_low_level = [{"name": "London Low", "value": levels["london_low"], "type": "low"}]
-    sweep_lon_low = detect_sweep(candles_5m, lon_low_level)
+    swept = pdl_sweep["swept_level"]
+    print(f"  🎯 PDL Supuruldu: {pdl:.2f} (ext: {pdl_sweep['extreme']:.2f}) "
+          f"@{pdl_sweep['time'].strftime('%H:%M')} NY")
 
-    all_sweeps = []
-    if sweep_asia: all_sweeps.append(("ASIA", sweep_asia))
-    if sweep_lon_high: all_sweeps.append(("LON_HIGH", sweep_lon_high))
-    if sweep_lon_low: all_sweeps.append(("LON_LOW", sweep_lon_low))
-
-    if not all_sweeps:
-        print("  Henuz likidite avi (sweep) yok."); return
-
-    all_sweeps.sort(key=lambda x: x[1]["time"])
-    earliest_type, earliest_sweep = all_sweeps[0]
-    swept = earliest_sweep.get("swept_level", "?")
-
-    print(f"  🎯 Ilk Sweep: {swept} @ {earliest_sweep['level']:.2f} "
-          f"(ext: {earliest_sweep['extreme']:.2f}) @{earliest_sweep['time'].strftime('%H:%M')} [{earliest_type}]")
-
-    # ── F FILTRELER ──
-    if earliest_type == "ASIA":
-        print(f"  ⏭️ {swept} supuruldu — Asia seviyeleri F'de atlanir."); return
-
-    # F stratejisi: hem LH hem LL → SHORT (5dk)
-    if earliest_type in ("LON_HIGH", "LON_LOW"):
-        forced_dir = "SHORT"
-        sl_price = earliest_sweep["extreme"]
-        strategy = f"F: {swept} SHORT (5dk)"
-        entry_candles = candles_5m
-        sweep = earliest_sweep
-        print(f"  → {swept}: SHORT (5dk) | SL = sweep extreme ({sl_price:.2f})")
-    else:
-        print(f"  ⏭️ Bilinmeyen: {swept}"); return
-
-    mod_sweep = {
-        "direction": forced_dir,
-        "level": sweep["level"],
-        "extreme": sl_price,
-        "time": sweep["time"],
-        "swept_level": sweep.get("swept_level", "?")
-    }
-    signal = detect_inverse_fvg_entry(entry_candles, mod_sweep)
+    # FVG giris tespiti (5dk)
+    signal = detect_inverse_fvg_entry(candles_5m, pdl_sweep)
     if not signal:
-        print(f"  Sweep sonrasi henuz inverse FVG girisi olusmadi — bekleniyor."); return
+        print(f"  Sweep sonrasi henuz inverse FVG girisi olusmadi — bekleniyor.")
+        return
 
     direction, entry, sl, tp = signal["direction"], signal["entry"], signal["sl"], signal["tp"]
     rr = RR_TARGET
@@ -317,12 +295,11 @@ def run_scan():
         "sl_moved_breakeven": False, "sl_moved_profit": False, "tp_extended": False,
         "open_time": datetime.now(timezone.utc).isoformat(), "close_time": None, "result_pct": None,
         "notes": json.dumps({
-            "strategy": strategy,
-            "swept_level": swept,
-            "sweep_level": sweep["level"], "sweep_extreme": sweep["extreme"],
+            "strategy": "D: PDL Sweep LONG (5dk)",
+            "swept_level": "PDL",
+            "sweep_level": pdl, "sweep_extreme": pdl_sweep["extreme"],
+            "pdh": pdh, "pdl": pdl,
             "tf_used": "5m",
-            "asia_high": levels["asia_high"], "asia_low": levels["asia_low"],
-            "london_high": levels["london_high"], "london_low": levels["london_low"],
         })
     }
     created = create_trade(trade_data)
@@ -341,14 +318,13 @@ def run_scan():
         f"🎯 *TP*: `{tp:.2f}` (+{tp_pct:.3f}%)\n"
         f"🛡️ *SL*: `{sl:.2f}` (-{sl_pct:.3f}%)\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🌏 *Asia* → H: `{levels['asia_high']:.2f}` | L: `{levels['asia_low']:.2f}`\n"
-        f"🇬🇧 *London* → H: `{levels['london_high']:.2f}` | L: `{levels['london_low']:.2f}`\n"
+        f"📊 *PDH*: `{pdh:.2f}` | *PDL*: `{pdl:.2f}`\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"⚖️ *R:R* → {rr:.1f}R\n"
-        f"🧠 Likidite Avı: {swept} @ {sweep['level']:.2f}\n"
-        f"📊 Zaman Dilimi: 5dk\n"
+        f"🧠 Likidite Avı: {swept} @ {pdl:.2f}\n"
+        f"📈 Zaman Dilimi: 5dk\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📡 *Bot 1 — BTC ICT (Strateji F)*"
+        f"📡 *Bot 1 — BTC ICT (Strateji D)*"
     )
     print(f"  ✅ Sinyal gonderildi: {direction} @ {entry:.2f} [5dk]")
 
