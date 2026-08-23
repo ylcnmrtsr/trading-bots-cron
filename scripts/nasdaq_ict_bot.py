@@ -275,17 +275,32 @@ def detect_sweep(candles, session_high, session_low):
     return None
 
 def find_fvgs(candles, kind):
-    """3 mumluk fair value gap. kind: 'bearish' ya da 'bullish'."""
+    """3 mumluk fair value gap. kind: 'bearish' ya da 'bullish'.
+    Hem strict FVG hem de quasi-FVG (küçük overlap'li imbalance) yakalar."""
     fvgs = []
     for i in range(2, len(candles)):
-        c1, c3 = candles[i - 2], candles[i]
-        if kind == "bearish" and c1["low"] > c3["high"]:
-            fvgs.append({"top": c1["low"], "bottom": c3["high"]})
-        elif kind == "bullish" and c1["high"] < c3["low"]:
-            fvgs.append({"top": c3["low"], "bottom": c1["high"]})
+        c1, c2, c3 = candles[i - 2], candles[i - 1], candles[i]
+        if kind == "bearish":
+            # Strict: c1.low > c3.high (gap)
+            if c1["low"] > c3["high"]:
+                fvgs.append({"top": c1["low"], "bottom": c3["high"], "strict": True})
+            # Quasi: c1.low > c3.close ve c1.body > c3.body (imbalance)
+            elif c1["low"] > c3["close"] and (c1["open"] - c1["close"]) > (c3["high"] - c3["low"]) * 0.5:
+                fvgs.append({"top": c1["low"], "bottom": c3["high"], "strict": False})
+        elif kind == "bullish":
+            # Strict: c1.high < c3.low (gap)
+            if c1["high"] < c3["low"]:
+                fvgs.append({"top": c3["low"], "bottom": c1["high"], "strict": True})
+            # Quasi: c1.high < c3.close ve c1.body > c3.body (imbalance)
+            elif c1["high"] < c3["close"] and (c1["close"] - c1["open"]) > (c3["high"] - c3["low"]) * 0.5:
+                fvgs.append({"top": c3["low"], "bottom": c1["high"], "strict": False})
     return fvgs
 
 def detect_inverse_fvg_entry(candles, sweep):
+    """Sweep sonrasi inverse FVG girisini tespit et.
+    1) Sweep'e giden haraketin biraktigi FVG'leri bul (pre-sweep + sweep mumu)
+    2) FVG yoksa, sweep mumunun displacement zonunu kullan
+    3) Fiyat bu zone'u ters yonde kapanisla kirdiginda giris"""
     sweep_idx = next((i for i, c in enumerate(candles) if c["dt"] == sweep["time"]), None)
     if sweep_idx is None:
         return None
@@ -294,22 +309,43 @@ def detect_inverse_fvg_entry(candles, sweep):
     post = candles[sweep_idx + 1:]
     fvg_kind = "bearish" if direction == "LONG" else "bullish"
     fvgs = find_fvgs(pre, fvg_kind)
+    
+    # FVG bulunamazsa, sweep mumunun displacement zonunu kullan
+    if not fvgs and sweep_idx >= 1:
+        sweep_candle = candles[sweep_idx]
+        prev_candle = candles[sweep_idx - 1]
+        if direction == "LONG":
+            # Sweep low'a indi, displacement yukari. Zone: sweep mumunun body'si
+            zone_top = max(sweep_candle["open"], sweep_candle["close"])
+            zone_bottom = min(prev_candle["low"], sweep_candle["low"])
+            if zone_top > zone_bottom:
+                fvgs.append({"top": zone_top, "bottom": zone_bottom, "strict": False})
+        else:
+            # Sweep high'a cikti, displacement asagi. Zone: sweep mumunun body'si
+            zone_top = max(prev_candle["high"], sweep_candle["high"])
+            zone_bottom = min(sweep_candle["open"], sweep_candle["close"])
+            if zone_top > zone_bottom:
+                fvgs.append({"top": zone_top, "bottom": zone_bottom, "strict": False})
+    
     if not fvgs:
         return None
+    
+    # En genis FVG'yi sec
+    best_fvg = max(fvgs, key=lambda f: f["top"] - f["bottom"])
+    
     for c in post:
-        for f in fvgs:
-            if direction == "LONG" and c["close"] > f["top"]:
-                entry, sl = c["close"], sweep["extreme"]
-                risk = entry - sl
-                if risk <= 0: continue
-                tp = entry + risk * RR_TARGET
-                return {"direction": "LONG", "entry": entry, "sl": sl, "tp": tp, "time": c["dt"]}
-            if direction == "SHORT" and c["close"] < f["bottom"]:
-                entry, sl = c["close"], sweep["extreme"]
-                risk = sl - entry
-                if risk <= 0: continue
-                tp = entry - risk * RR_TARGET
-                return {"direction": "SHORT", "entry": entry, "sl": sl, "tp": tp, "time": c["dt"]}
+        if direction == "LONG" and c["close"] > best_fvg["top"]:
+            entry, sl = c["close"], sweep["extreme"]
+            risk = entry - sl
+            if risk <= 0: continue
+            tp = entry + risk * RR_TARGET
+            return {"direction": "LONG", "entry": entry, "sl": sl, "tp": tp, "time": c["dt"]}
+        if direction == "SHORT" and c["close"] < best_fvg["bottom"]:
+            entry, sl = c["close"], sweep["extreme"]
+            risk = sl - entry
+            if risk <= 0: continue
+            tp = entry - risk * RR_TARGET
+            return {"direction": "SHORT", "entry": entry, "sl": sl, "tp": tp, "time": c["dt"]}
     return None
 
 # ── SCAN ─────────────────────────────────────────────────────────────────
