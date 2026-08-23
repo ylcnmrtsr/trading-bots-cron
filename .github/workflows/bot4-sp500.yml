@@ -1,4 +1,4 @@
-name: Bot4 S&P 500 + Bot5 NASDAQ Scanner
+name: Bot4 S&P 500 Scanner
 
 on:
   schedule:
@@ -21,8 +21,7 @@ jobs:
       - name: Install dependencies
         run: pip install requests yfinance --quiet
 
-      # ── BOT 4: S&P 500 (ES) ──────────────────────────────
-      - name: Run Bot4 (ES) Scan
+      - name: Run Bot4 Scan
         env:
           TELEGRAM_BOT_TOKEN_8: ${{ secrets.TELEGRAM_BOT_TOKEN_8 }}
           BASE44_API_KEY: ${{ secrets.BASE44_API_KEY }}
@@ -30,7 +29,7 @@ jobs:
           TRADOVATE_PASSWORD: ${{ secrets.TRADOVATE_PASSWORD }}
         run: python scripts/sp500_scalper_bot.py scan
 
-      - name: Run Bot4 (ES) Watchdog
+      - name: Run Bot4 Watchdog
         if: always()
         env:
           TELEGRAM_BOT_TOKEN_8: ${{ secrets.TELEGRAM_BOT_TOKEN_8 }}
@@ -38,21 +37,3 @@ jobs:
           TRADOVATE_USERNAME: ${{ secrets.TRADOVATE_USERNAME }}
           TRADOVATE_PASSWORD: ${{ secrets.TRADOVATE_PASSWORD }}
         run: python scripts/sp500_scalper_bot.py watchdog
-
-      # ── BOT 5: NASDAQ (NQ) ───────────────────────────────
-      - name: Run Bot5 (NQ) Scan
-        env:
-          TELEGRAM_BOT_TOKEN_9: ${{ secrets.TELEGRAM_BOT_TOKEN_9 }}
-          BASE44_API_KEY: ${{ secrets.BASE44_API_KEY }}
-          TRADOVATE_USERNAME: ${{ secrets.TRADOVATE_USERNAME }}
-          TRADOVATE_PASSWORD: ${{ secrets.TRADOVATE_PASSWORD }}
-        run: python scripts/nasdaq_scalper_bot.py scan
-
-      - name: Run Bot5 (NQ) Watchdog
-        if: always()
-        env:
-          TELEGRAM_BOT_TOKEN_9: ${{ secrets.TELEGRAM_BOT_TOKEN_9 }}
-          BASE44_API_KEY: ${{ secrets.BASE44_API_KEY }}
-          TRADOVATE_USERNAME: ${{ secrets.TRADOVATE_USERNAME }}
-          TRADOVATE_PASSWORD: ${{ secrets.TRADOVATE_PASSWORD }}
-        run: python scripts/nasdaq_scalper_bot.py watchdog
